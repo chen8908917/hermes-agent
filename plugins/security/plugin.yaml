@@ -1,0 +1,30 @@
+name: security
+version: 0.1.0
+description: "Scoped security assessment helpers, workflow gates, and conservative scanner adapters."
+author: NousResearch
+kind: backend
+provides_tools:
+  - security_scope_check
+  - security_extract_iocs
+  - security_normalize_findings
+  - security_prioritize_findings
+  - security_build_workflow
+  - security_workflow_gate
+  - security_parse_nmap_xml
+  - security_nmap_plan
+  - security_nmap_scan
+  - security_dir_enum_plan
+  - security_dir_enum_scan
+  - security_whois_lookup
+  - security_subfinder_plan
+  - security_subfinder_scan
+  - security_sqlmap_plan
+  - security_msf_rpc_plan
+  - security_hydra_plan
+  - security_tshark_plan
+  - security_tshark_capture
+  - security_build_agent_team
+  - security_dispatch_agent_tasks
+  - security_collect_agent_handoffs
+  - security_generate_skill
+  - security_merge_skills
