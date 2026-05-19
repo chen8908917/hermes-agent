@@ -57,6 +57,9 @@ class TestSecurityAgentDispatch:
         agent_ids = [task["agent_id"] for task in result["tasks"]]
         assert agent_ids == ["scope_guard", "recon_agent"]
         assert all(task["can_start"] is True for task in result["tasks"])
+        recon_task = result["tasks"][1]
+        assert recon_task["delegate_task_args"]["toolsets"] == ["security", "terminal"]
+        assert "goal" in recon_task["delegate_task_args"]
         assert "delegate_task" in result["main_agent_next_step"]
 
     def test_dispatch_blocks_out_of_scope_target(self):
@@ -89,6 +92,8 @@ class TestSecurityAgentDispatch:
         assert result["dispatch_allowed"] is True
         agent_ids = [task["agent_id"] for task in result["tasks"]]
         assert agent_ids == ["ctf_exploit_solver", "ctf_flag_agent"]
+        assert "terminal" in result["tasks"][0]["delegate_task_args"]["toolsets"]
+        assert "security" in result["tasks"][0]["delegate_task_args"]["toolsets"]
         assert "ctf_flag_discovery" in result["tasks"][0]["delegate_task_prompt"]
 
 

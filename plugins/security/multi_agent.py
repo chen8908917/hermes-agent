@@ -436,6 +436,17 @@ def _dispatch_packet(
             "available_artifacts": available_artifacts,
             "finding_count": len(findings),
         },
+        "recommended_toolsets": _toolsets_for_role(role),
+        "delegate_task_args": {
+            "goal": prompt,
+            "context": (
+                "Return only the expected JSON handoff. "
+                f"Security workflow id: {workflow_id or 'inherit from session'}. "
+                f"Completion criteria: {', '.join(role['handoff_contract'])}."
+            ),
+            "toolsets": _toolsets_for_role(role),
+            "role": "leaf",
+        },
         "completion_criteria": role["handoff_contract"],
         "delegate_task_prompt": prompt,
         "expected_handoff_schema": {
@@ -463,6 +474,26 @@ def _prioritize_roles(roles: list[dict[str, Any]], mode: str, max_agents: int) -
         order = ["coordinator", "scope_guard", "recon_agent", "vulnerability_analyst", "validation_agent", "traffic_analyst", "reporting_agent"]
     role_by_id = {role["id"]: role for role in roles}
     return [role_by_id[role_id] for role_id in order if role_id in role_by_id][:max_agents]
+
+
+def _toolsets_for_role(role: dict[str, Any]) -> list[str]:
+    toolsets = ["security"]
+    allowed_tools = set(role.get("allowed_tools") or [])
+    if allowed_tools & {
+        "security_nmap_scan",
+        "security_dir_enum_scan",
+        "security_whois_lookup",
+        "security_subfinder_scan",
+        "security_tshark_capture",
+    }:
+        toolsets.append("terminal")
+    if role.get("id") in {"ctf_recon_agent", "ctf_exploit_solver"}:
+        toolsets.extend(["terminal", "file"])
+    if role.get("id") in {"ctf_flag_agent", "reporting_agent"}:
+        toolsets.append("file")
+    if "delegate_task" in allowed_tools:
+        toolsets.append("delegation")
+    return _dedupe(toolsets)
 
 
 def _shared_rules(mode: str) -> list[str]:
