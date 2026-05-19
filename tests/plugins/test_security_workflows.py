@@ -196,7 +196,7 @@ class TestSecurityWorkflowGate:
         assert result["allowed"] is True
         assert result["decision"] == "proceed"
 
-    def test_gate_requires_scope_for_ctf_requested_network_target(self):
+    def test_gate_allows_ctf_requested_network_target_without_explicit_scope(self):
         from plugins.security.workflows import handle_workflow_gate
 
         result = _loads(handle_workflow_gate({
@@ -206,8 +206,8 @@ class TestSecurityWorkflowGate:
             "available_artifacts": ["challenge_type"],
         }))
 
-        assert result["allowed"] is False
-        assert "requested network targets require explicit allowed_targets" in result["blockers"]
+        assert result["allowed"] is True
+        assert result["decision"] == "proceed"
 
     def test_gate_allows_ctf_http_target_without_explicit_scope(self):
         from plugins.security.workflows import handle_workflow_gate

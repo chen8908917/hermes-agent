@@ -52,8 +52,11 @@ SECURITY_START_WORKFLOW_SCHEMA = {
             "include_active_testing": {"type": "boolean", "default": True},
             "require_agent_dispatch": {
                 "type": "boolean",
-                "description": "Require dispatch/collect handoffs on active phases.",
-                "default": True,
+                "description": (
+                    "Require dispatch/collect handoffs on active phases. "
+                    "When omitted, defaults to false for CTF and true for other modes."
+                ),
+                "default": False,
             },
             "workflow_id": {
                 "type": "string",
@@ -351,10 +354,18 @@ AUTO_ARTIFACT_BY_TOOL = {
 
 SECURITY_COMMAND_RE = re.compile(
     r"(?i)(^|\s|/)(nmap|sqlmap|hydra|msfconsole|msfrpcd?|gobuster|dirsearch|ffuf|"
-    r"feroxbuster|subfinder|tshark|tcpdump|linpeas|linenum|pspy)(\s|$)"
+    r"feroxbuster|subfinder|tshark|tcpdump|linpeas|linenum|pspy|nc|netcat|telnet|"
+    r"ftp|ssh|smbclient|enum4linux|rpcclient|dig|nslookup|host|ldapsearch|showmount|"
+    r"snmpwalk)(\s|$)"
 )
 HIGH_RISK_COMMAND_RE = re.compile(
     r"(?i)(sudo\s+-l|/etc/shadow|\.sudo_as_admin_successful|find\s+/.*-perm\s+-?4000|nc\s+-e|bash\s+-i)"
+)
+CTF_AUTO_SCOPE_COMMAND_RE = re.compile(
+    r"(?i)(^|\s|/)(curl|wget|httpie|python|nmap|sqlmap|hydra|msfconsole|msfrpcd?|"
+    r"gobuster|dirsearch|ffuf|feroxbuster|subfinder|tshark|tcpdump|nc|netcat|"
+    r"telnet|ftp|ssh|smbclient|enum4linux|rpcclient|dig|nslookup|host|ldapsearch|"
+    r"showmount|snmpwalk)(\s|$)"
 )
 HOST_RE = re.compile(r"\b(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,63}\b")
 IPV4_RE = re.compile(r"(?<![\w.])(?:\d{1,3}\.){3}\d{1,3}(?![\w.])")
@@ -391,6 +402,13 @@ def handle_start_workflow(args: dict[str, Any], **kw: Any) -> str:
     if not phases:
         return _json({"success": False, "error": "workflow has no runnable phases", "workflow": workflow})
 
+    mode = workflow_args["mode"] if workflow_args["mode"] in {"defensive", "assessment", "range", "ctf"} else workflow.get("task", {}).get("mode", "assessment")
+    require_agent_dispatch = (
+        bool(args.get("require_agent_dispatch"))
+        if "require_agent_dispatch" in args
+        else mode != "ctf"
+    )
+
     state = {
         "workflow_id": key,
         "status": "active",
@@ -398,11 +416,11 @@ def handle_start_workflow(args: dict[str, Any], **kw: Any) -> str:
         "updated_at": time.time(),
         "task": workflow.get("task", {}),
         "policy": workflow.get("policy", {}),
-        "mode": workflow_args["mode"] if workflow_args["mode"] in {"defensive", "assessment", "range", "ctf"} else workflow.get("task", {}).get("mode", "assessment"),
+        "mode": mode,
         "allowed_targets": workflow_args["allowed_targets"],
         "denied_targets": workflow_args["denied_targets"],
         "constraints": workflow_args["constraints"],
-        "require_agent_dispatch": bool(args.get("require_agent_dispatch", True)),
+        "require_agent_dispatch": require_agent_dispatch,
         "phases": phases,
         "phase_index": 0,
         "completed_phases": [],
@@ -878,7 +896,7 @@ def _target_blocker(state: dict[str, Any], tool_name: str, args: dict[str, Any])
     allowed_targets = _string_list(state.get("allowed_targets"))
     denied_targets = _string_list(state.get("denied_targets"))
     if not allowed_targets:
-        if _ctf_http_request_allowed_without_scope(state, tool_name, args, targets):
+        if _ctf_command_allowed_without_scope(state, tool_name, args, targets):
             for target in targets:
                 decision = _scope_decision(target, [target], denied_targets)
                 if not decision["allowed"]:
@@ -892,6 +910,29 @@ def _target_blocker(state: dict[str, Any], tool_name: str, args: dict[str, Any])
         if not decision["allowed"]:
             return f"Target {target} is outside authorized scope: {decision['reason']}"
     return None
+
+
+def _ctf_command_allowed_without_scope(
+    state: dict[str, Any],
+    tool_name: str,
+    args: dict[str, Any],
+    targets: list[str],
+) -> bool:
+    if state.get("mode") != "ctf":
+        return False
+    if _current_phase_id(state) not in {
+        "ctf_target_recon",
+        "ctf_vulnerability_discovery",
+        "ctf_foothold",
+        "ctf_flag_discovery",
+    }:
+        return False
+    if tool_name in OPERATIONAL_TOOL_NAMES:
+        command = _command_text(args)
+        return bool(CTF_AUTO_SCOPE_COMMAND_RE.search(command) or re.search(r"(?i)\bhttps?://", command))
+    if tool_name in SECURITY_ENFORCED_TOOL_NAMES | SECURITY_PLAN_TOOLS:
+        return True
+    return False
 
 
 def _ctf_http_request_allowed_without_scope(
@@ -909,9 +950,7 @@ def _ctf_http_request_allowed_without_scope(
         "ctf_flag_discovery",
     }:
         return False
-    if tool_name not in OPERATIONAL_TOOL_NAMES:
-        return False
-    if not targets:
+    if tool_name not in OPERATIONAL_TOOL_NAMES or not targets:
         return False
     command = _command_text(args)
     if not re.search(r"(?i)\bhttps?://", command):

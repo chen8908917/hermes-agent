@@ -678,16 +678,15 @@ def handle_workflow_gate(args: dict[str, Any], **_: Any) -> str:
     if phase_id in _ACTIVE_PHASES:
         if not allowed_targets and not phase_id.startswith("ctf_"):
             blockers.append("active phases require explicit allowed_targets")
-        ctf_http_targets_auto_allowed = (
+        ctf_targets_auto_allowed = (
             mode == "ctf"
             and phase_id.startswith("ctf_")
             and requested_targets
-            and _all_http_targets(requested_targets)
         )
-        if requested_targets and not allowed_targets and not ctf_http_targets_auto_allowed:
+        if requested_targets and not allowed_targets and not ctf_targets_auto_allowed:
             blockers.append("requested network targets require explicit allowed_targets")
         for target in requested_targets:
-            effective_allowed = [target] if ctf_http_targets_auto_allowed and not allowed_targets else allowed_targets
+            effective_allowed = [target] if ctf_targets_auto_allowed and not allowed_targets else allowed_targets
             decision = _scope_decision(target, effective_allowed, denied_targets)
             if not decision["allowed"]:
                 blockers.append(f"target outside authorized scope: {target} ({decision['reason']})")
@@ -808,10 +807,6 @@ def _build_scope_summary(
         "blocked_asset_count": sum(1 for item in asset_decisions if not item["allowed"]),
         "unclassified_asset_count": sum(1 for asset in assets if not (asset.get("target") or asset.get("name") or asset.get("url") or asset.get("host"))),
     }
-
-
-def _all_http_targets(targets: list[str]) -> bool:
-    return all(str(target).strip().lower().startswith(("http://", "https://")) for target in targets)
 
 
 def _resource_summary(

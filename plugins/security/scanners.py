@@ -732,7 +732,7 @@ def build_nmap_plan(args: dict[str, Any]) -> dict[str, Any]:
         errors.append(f"phase_id must be one of: {', '.join(sorted(_ALLOWED_NMAP_PHASES))}")
     if not targets:
         errors.append("at least one target is required")
-    if not allowed_targets:
+    if not allowed_targets and mode != "ctf":
         errors.append("allowed_targets is required for nmap planning")
     if profile not in _PROFILE_ARGS:
         errors.append(f"scan_profile must be one of: {', '.join(sorted(_PROFILE_ARGS))}")
@@ -745,7 +745,8 @@ def build_nmap_plan(args: dict[str, Any]) -> dict[str, Any]:
         if normalized.get("error"):
             errors.append(f"invalid target {target!r}: {normalized['error']}")
             continue
-        decision = _scope_decision(normalized["scope_target"], allowed_targets, denied_targets)
+        effective_allowed = allowed_targets or ([normalized["scope_target"]] if mode == "ctf" else [])
+        decision = _scope_decision(normalized["scope_target"], effective_allowed, denied_targets)
         if not decision["allowed"]:
             errors.append(f"target outside authorized scope: {target} ({decision['reason']})")
             continue
@@ -798,6 +799,7 @@ def build_dir_enum_plan(args: dict[str, Any]) -> dict[str, Any]:
     tool = str(args.get("tool") or "dirsearch").strip().lower()
     allowed_targets = _string_list(args.get("allowed_targets"))
     denied_targets = _string_list(args.get("denied_targets"))
+    mode = _normalize_mode(args.get("mode"))
     rate_limit = _bounded_int(args.get("rate_limit", 5), 1, 50)
     errors = []
 
@@ -805,7 +807,8 @@ def build_dir_enum_plan(args: dict[str, Any]) -> dict[str, Any]:
         errors.append("tool must be dirsearch or gobuster")
     if not _is_http_url(target):
         errors.append("target must be an http or https URL")
-    decision = _scope_decision(target, allowed_targets, denied_targets)
+    effective_allowed = allowed_targets or ([target] if mode == "ctf" else [])
+    decision = _scope_decision(target, effective_allowed, denied_targets)
     if not decision["allowed"]:
         errors.append(f"target outside authorized scope: {target} ({decision['reason']})")
 
@@ -851,10 +854,12 @@ def build_subfinder_plan(args: dict[str, Any]) -> dict[str, Any]:
     domain = _target_host(str(args.get("domain") or ""))
     allowed_targets = _string_list(args.get("allowed_targets"))
     denied_targets = _string_list(args.get("denied_targets"))
+    mode = _normalize_mode(args.get("mode"))
     errors = []
     if not domain or "/" in domain or ":" in domain:
         errors.append("domain must be a hostname, not a URL or CIDR")
-    decision = _scope_decision(domain, allowed_targets, denied_targets)
+    effective_allowed = allowed_targets or ([domain] if mode == "ctf" else [])
+    decision = _scope_decision(domain, effective_allowed, denied_targets)
     if not decision["allowed"]:
         errors.append(f"domain outside authorized scope: {domain} ({decision['reason']})")
     if errors:
@@ -937,7 +942,8 @@ def _high_risk_plan(
         errors.append(f"{tool} planning requires assessment, range, or ctf mode")
     if not target:
         errors.append("target is required")
-    decision = _scope_decision(target, allowed_targets, denied_targets)
+    effective_allowed = allowed_targets or ([target] if mode == "ctf" else [])
+    decision = _scope_decision(target, effective_allowed, denied_targets)
     if not decision["allowed"]:
         errors.append(f"target outside authorized scope: {target} ({decision['reason']})")
 

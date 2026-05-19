@@ -113,6 +113,18 @@ class TestNmapPlan:
         assert result["success"] is False
         assert any("max_cidr_hosts" in error for error in result["errors"])
 
+    def test_ctf_nmap_plan_allows_target_without_explicit_scope(self):
+        from plugins.security.scanners import handle_nmap_plan
+
+        result = _loads(handle_nmap_plan({
+            "targets": ["10.10.10.5"],
+            "mode": "ctf",
+            "scan_profile": "top_ports",
+        }))
+
+        assert result["success"] is True
+        assert result["targets"][0]["scope_target"] == "10.10.10.5"
+
 
 class TestNmapScan:
     def test_scan_defaults_to_dry_run(self):
@@ -226,6 +238,18 @@ class TestReconAdapters:
         assert result["executed"] is False
         assert result["error"] == "dirsearch executable not found on PATH"
 
+    def test_ctf_dir_enum_plan_allows_url_without_explicit_scope(self):
+        from plugins.security.scanners import handle_dir_enum_plan
+
+        result = _loads(handle_dir_enum_plan({
+            "target": "https://box.ctf.local",
+            "mode": "ctf",
+            "tool": "dirsearch",
+        }))
+
+        assert result["success"] is True
+        assert result["target"] == "https://box.ctf.local"
+
     def test_whois_lookup_blocks_out_of_scope_target(self):
         from plugins.security.scanners import handle_whois_lookup
 
@@ -249,6 +273,17 @@ class TestReconAdapters:
         assert result["success"] is True
         assert result["argv"] == ["subfinder", "-silent", "-d", "example.com"]
         assert result["max_results"] == 25
+
+    def test_ctf_subfinder_plan_allows_domain_without_explicit_scope(self):
+        from plugins.security.scanners import handle_subfinder_plan
+
+        result = _loads(handle_subfinder_plan({
+            "domain": "ctf.local",
+            "mode": "ctf",
+        }))
+
+        assert result["success"] is True
+        assert result["argv"] == ["subfinder", "-silent", "-d", "ctf.local"]
 
 
 class TestHighRiskPlanningAdapters:
@@ -309,6 +344,18 @@ class TestHighRiskPlanningAdapters:
         assert result["gate"]["approved"] is True
         assert result["gate"]["auto_authorized_in_ctf"] is True
         assert result["gate"]["phase_id"] == "ctf_foothold"
+
+    def test_ctf_high_risk_plan_allows_target_without_explicit_scope(self):
+        from plugins.security.scanners import handle_hydra_plan
+
+        result = _loads(handle_hydra_plan({
+            "target": "10.10.10.5",
+            "mode": "ctf",
+            "service": "ssh",
+        }))
+
+        assert result["success"] is True
+        assert result["gate"]["approved"] is True
 
 
 class TestTrafficAdapters:

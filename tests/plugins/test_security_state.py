@@ -274,7 +274,7 @@ class TestSecurityWorkflowHooks:
 
         assert result is None
 
-    def test_ctf_non_http_network_command_still_requires_scope(self):
+    def test_ctf_common_network_command_can_run_without_explicit_allowed_targets(self):
         from plugins.security.state import (
             handle_advance_phase,
             handle_record_artifact,
@@ -298,6 +298,33 @@ class TestSecurityWorkflowHooks:
             tool_name="terminal",
             args={"command": "nmap 10.10.10.5"},
             task_id="ctf-non-http",
+        )
+
+        assert result is None
+
+    def test_ctf_unlisted_network_command_still_requires_scope(self):
+        from plugins.security.state import (
+            handle_advance_phase,
+            handle_record_artifact,
+            handle_start_workflow,
+            security_pre_tool_call,
+        )
+
+        handle_start_workflow({
+            "task_name": "web ctf",
+            "objective": "probe challenge host",
+            "mode": "ctf",
+            "include_active_testing": True,
+        }, task_id="ctf-ping")
+        handle_record_artifact({"artifact_id": "ctf_rules", "content": "rules"}, task_id="ctf-ping")
+        handle_advance_phase({"rationale": "rules recorded"}, task_id="ctf-ping")
+        handle_record_artifact({"artifact_id": "challenge_type", "content": "web"}, task_id="ctf-ping")
+        handle_advance_phase({"rationale": "classified"}, task_id="ctf-ping")
+
+        result = security_pre_tool_call(
+            tool_name="terminal",
+            args={"command": "ping 10.10.10.5"},
+            task_id="ctf-ping",
         )
 
         assert result is not None
@@ -332,3 +359,30 @@ class TestSecurityWorkflowHooks:
 
         assert result is not None
         assert "matched denied scope" in result["message"]
+
+    def test_ctf_default_does_not_require_dispatch_for_direct_tooling(self):
+        from plugins.security.state import (
+            handle_advance_phase,
+            handle_record_artifact,
+            handle_start_workflow,
+            security_pre_tool_call,
+        )
+
+        handle_start_workflow({
+            "task_name": "web ctf",
+            "objective": "solve challenge",
+            "mode": "ctf",
+            "include_active_testing": True,
+        }, task_id="ctf-relaxed-dispatch")
+        handle_record_artifact({"artifact_id": "ctf_rules", "content": "rules"}, task_id="ctf-relaxed-dispatch")
+        handle_advance_phase({"rationale": "rules recorded"}, task_id="ctf-relaxed-dispatch")
+        handle_record_artifact({"artifact_id": "challenge_type", "content": "web"}, task_id="ctf-relaxed-dispatch")
+        handle_advance_phase({"rationale": "classified"}, task_id="ctf-relaxed-dispatch")
+
+        result = security_pre_tool_call(
+            tool_name="terminal",
+            args={"command": "nc 10.10.10.5 1337"},
+            task_id="ctf-relaxed-dispatch",
+        )
+
+        assert result is None
