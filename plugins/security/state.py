@@ -429,6 +429,7 @@ def handle_start_workflow(args: dict[str, Any], **kw: Any) -> str:
         "available_artifacts": [],
         "hypotheses": [],
         "dead_ends": [],
+        "deferred_tool_calls": [],
         "dispatch": {},
         "last_tool": None,
         "workflow": workflow,
@@ -626,7 +627,11 @@ def security_pre_tool_call(
             return _block(f"Security workflow is in phase {phase_id}; cannot operate on phase {requested_phase}.")
         return None
 
+    allowed_tools = PHASE_ALLOWED_TOOLS.get(phase_id, STATE_TOOL_NAMES | WORKFLOW_META_TOOLS)
+
     if tool_name in DELEGATION_TOOL_NAMES:
+        if tool_name not in allowed_tools:
+            return _block(_phase_tool_block_message(state, phase_id, tool_name, tool_args))
         blocker = _delegate_blocker(state, phase_id)
         return _block(blocker) if blocker else None
 
@@ -634,9 +639,8 @@ def security_pre_tool_call(
     if dispatch_blocker and tool_name not in WORKFLOW_META_TOOLS:
         return _block(dispatch_blocker)
 
-    allowed_tools = PHASE_ALLOWED_TOOLS.get(phase_id, STATE_TOOL_NAMES | WORKFLOW_META_TOOLS)
     if tool_name not in allowed_tools:
-        return _block(f"Tool {tool_name} is not allowed during security phase {phase_id}. Call security_next_action.")
+        return _block(_phase_tool_block_message(state, phase_id, tool_name, tool_args))
 
     supplied_phase = str(tool_args.get("phase_id") or "").strip()
     if supplied_phase and supplied_phase != phase_id:
@@ -780,6 +784,7 @@ def _public_state(state: dict[str, Any]) -> dict[str, Any]:
         "artifact_count": len(state["artifacts"]),
         "hypothesis_count": len(state["hypotheses"]),
         "dead_ends": state["dead_ends"][-5:],
+        "deferred_tool_calls": state.get("deferred_tool_calls", [])[-10:],
         "dispatch": state["dispatch"],
         "require_agent_dispatch": state["require_agent_dispatch"],
         "allowed_targets": state["allowed_targets"],
@@ -796,6 +801,7 @@ def _next_action(state: dict[str, Any]) -> dict[str, Any]:
     missing = _missing_exit_artifacts(state, phase_id)
     dispatch_blocker = _dispatch_blocker(state, phase_id)
     repeated = _latest_repeat_warning(state)
+    deferred_ready = _deferred_calls_for_phase(state, phase_id)
     return {
         "action": "execute_current_phase",
         "phase_id": phase_id,
@@ -808,6 +814,7 @@ def _next_action(state: dict[str, Any]) -> dict[str, Any]:
         "dispatch_blocker": dispatch_blocker,
         "allowed_tools": sorted(PHASE_ALLOWED_TOOLS.get(phase_id, set())),
         "repeat_warning": repeated,
+        "deferred_tool_calls_ready": deferred_ready,
         "instructions": _phase_instructions(state, phase_id, dispatch_blocker, missing, repeated),
     }
 
@@ -830,6 +837,124 @@ def _phase_instructions(
         instructions.append("Merge handoffs with security_collect_agent_handoffs before advancing.")
     instructions.append("Call security_advance_phase only after the phase exit criteria are met.")
     return instructions
+
+
+def _phase_tool_block_message(
+    state: dict[str, Any],
+    phase_id: str,
+    tool_name: str,
+    args: dict[str, Any],
+) -> str:
+    base = f"Tool {tool_name} is not allowed during security phase {phase_id}."
+    next_phase = _next_phase_allowing_tool(state, tool_name)
+    missing = _missing_exit_artifacts(state, phase_id)
+    missing_text = ", ".join(missing) if missing else "the current phase exit artifact"
+    deferred = _record_deferred_tool_call(
+        state,
+        current_phase=phase_id,
+        target_phase=next_phase,
+        tool_name=tool_name,
+        args=args,
+        reason="tool_not_allowed_in_current_phase",
+    )
+    deferred_text = (
+        f" Deferred call id {deferred['id']} has been recorded for {next_phase}."
+        if next_phase else
+        f" Deferred call id {deferred['id']} has been recorded for later review."
+    )
+
+    if state.get("mode") == "ctf" and tool_name in OPERATIONAL_TOOL_NAMES and _is_http_request_command(args):
+        retry_text = f" then retry the HTTP request in {next_phase}" if next_phase else ""
+        return (
+            f"{base} Continue the current phase without the HTTP request: complete the remaining phase tasks, "
+            f"record {missing_text} with security_record_artifact, call security_advance_phase,{retry_text}. "
+            "Do not use delegate_task or a subagent to bypass phase or scope gates."
+            f"{deferred_text}"
+        )
+
+    if tool_name in DELEGATION_TOOL_NAMES:
+        retry_text = f" Use delegation later in {next_phase} if needed." if next_phase else ""
+        return (
+            f"{base} Do not use delegate_task or a subagent to bypass phase or scope gates. "
+            f"Continue the current phase, record {missing_text}, and call security_advance_phase when ready."
+            f"{retry_text}{deferred_text}"
+        )
+
+    retry_text = f" Retry this tool in {next_phase} if it is still needed." if next_phase else ""
+    return f"{base} Call security_next_action, continue the current phase, and advance only after exit criteria are met.{retry_text}{deferred_text}"
+
+
+def _next_phase_allowing_tool(state: dict[str, Any], tool_name: str) -> str:
+    phases = state.get("phases") if isinstance(state.get("phases"), list) else []
+    start = int(state.get("phase_index") or 0) + 1
+    for phase in phases[start:]:
+        phase_id = str(phase.get("id") or "")
+        if tool_name in PHASE_ALLOWED_TOOLS.get(phase_id, set()):
+            return phase_id
+    return ""
+
+
+def _record_deferred_tool_call(
+    state: dict[str, Any],
+    *,
+    current_phase: str,
+    target_phase: str,
+    tool_name: str,
+    args: dict[str, Any],
+    reason: str,
+) -> dict[str, Any]:
+    calls = state.setdefault("deferred_tool_calls", [])
+    signature = {
+        "target_phase": target_phase,
+        "tool_name": tool_name,
+        "args": _deferred_args(args),
+        "reason": reason,
+    }
+    for call in calls:
+        if (
+            call.get("target_phase") == signature["target_phase"]
+            and call.get("tool_name") == signature["tool_name"]
+            and call.get("args") == signature["args"]
+            and call.get("reason") == signature["reason"]
+            and call.get("status") == "pending"
+        ):
+            return call
+    call = {
+        "id": f"deferred-{len(calls) + 1}",
+        "status": "pending",
+        "current_phase": current_phase,
+        "target_phase": target_phase,
+        "tool_name": tool_name,
+        "args": signature["args"],
+        "reason": reason,
+        "recorded_at": time.time(),
+    }
+    calls.append(call)
+    state["updated_at"] = time.time()
+    return call
+
+
+def _deferred_calls_for_phase(state: dict[str, Any], phase_id: str) -> list[dict[str, Any]]:
+    return [
+        call for call in state.get("deferred_tool_calls", [])
+        if call.get("status") == "pending" and call.get("target_phase") == phase_id
+    ]
+
+
+def _deferred_args(args: dict[str, Any]) -> dict[str, Any]:
+    result = {}
+    for key in ("command", "target", "targets", "url", "host", "domain", "phase_id"):
+        if key in args:
+            result[key] = deepcopy(args[key])
+    return result
+
+
+def _is_http_request_command(args: dict[str, Any]) -> bool:
+    command = _command_text(args)
+    return bool(
+        re.search(r"(?i)\bhttps?://", command)
+        and re.search(r"(?i)(\bcurl\b|\bwget\b|\bhttpie\b|\bpython\b|\brequests\b|fetch\()", command)
+    )
 
 
 def _phase_requires_dispatch(state: dict[str, Any], phase_id: str) -> bool:
@@ -924,6 +1049,7 @@ def _ctf_command_allowed_without_scope(
         "ctf_target_recon",
         "ctf_vulnerability_discovery",
         "ctf_foothold",
+        "ctf_privilege_escalation",
         "ctf_flag_discovery",
     }:
         return False
@@ -947,6 +1073,7 @@ def _ctf_http_request_allowed_without_scope(
         "ctf_target_recon",
         "ctf_vulnerability_discovery",
         "ctf_foothold",
+        "ctf_privilege_escalation",
         "ctf_flag_discovery",
     }:
         return False

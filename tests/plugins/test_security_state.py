@@ -274,6 +274,130 @@ class TestSecurityWorkflowHooks:
 
         assert result is None
 
+    @pytest.mark.parametrize("phase_artifact", [
+        ("ctf_target_recon", "challenge_type"),
+        ("ctf_vulnerability_discovery", "ctf_attack_surface"),
+        ("ctf_foothold", "candidate_solution_paths"),
+        ("ctf_privilege_escalation", "foothold_evidence"),
+        ("ctf_flag_discovery", "foothold_evidence"),
+    ])
+    def test_ctf_active_phases_do_not_block_http_requests(self, phase_artifact):
+        from plugins.security.state import (
+            handle_advance_phase,
+            handle_record_artifact,
+            handle_start_workflow,
+            security_pre_tool_call,
+        )
+
+        target_phase, artifact_id = phase_artifact
+        handle_start_workflow({
+            "task_name": "web ctf",
+            "objective": "probe challenge web service",
+            "mode": "ctf",
+            "include_active_testing": True,
+        }, task_id=f"ctf-http-{target_phase}")
+        phase_artifacts = {
+            "ctf_intake": "ctf_rules",
+            "ctf_challenge_classification": "challenge_type",
+            "ctf_target_recon": "ctf_attack_surface",
+            "ctf_vulnerability_discovery": "candidate_solution_paths",
+            "ctf_foothold": "foothold_evidence",
+            "ctf_privilege_escalation": "escalation_path",
+        }
+        while True:
+            if target_phase == "ctf_flag_discovery":
+                current_artifact = artifact_id
+            else:
+                current_artifact = phase_artifacts.get(target_phase)
+            if current_artifact and current_artifact in {"challenge_type", "ctf_attack_surface", "candidate_solution_paths", "foothold_evidence"}:
+                pass
+            # Stop once the current state has reached the phase under test.
+            from plugins.security.state import handle_get_workflow_state
+            state = _loads(handle_get_workflow_state({}, task_id=f"ctf-http-{target_phase}"))["state"]
+            current_phase = state["current_phase"]["id"]
+            if current_phase == target_phase:
+                break
+            handle_record_artifact({
+                "artifact_id": phase_artifacts[current_phase],
+                "content": current_phase,
+            }, task_id=f"ctf-http-{target_phase}")
+            handle_advance_phase({"rationale": f"{current_phase} done"}, task_id=f"ctf-http-{target_phase}")
+
+        result = security_pre_tool_call(
+            tool_name="terminal",
+            args={"command": "curl -i http://10.10.10.5:8080/"},
+            task_id=f"ctf-http-{target_phase}",
+        )
+
+        assert result is None
+
+    def test_ctf_curl_blocked_before_active_phase_with_progression_guidance(self):
+        from plugins.security.state import (
+            handle_advance_phase,
+            handle_get_workflow_state,
+            handle_next_action,
+            handle_record_artifact,
+            handle_start_workflow,
+            security_pre_tool_call,
+        )
+
+        handle_start_workflow({
+            "task_name": "web ctf",
+            "objective": "probe challenge web service",
+            "mode": "ctf",
+            "include_active_testing": True,
+        }, task_id="ctf-curl-too-early")
+        handle_record_artifact({"artifact_id": "ctf_rules", "content": "rules"}, task_id="ctf-curl-too-early")
+        handle_advance_phase({"rationale": "rules recorded"}, task_id="ctf-curl-too-early")
+
+        result = security_pre_tool_call(
+            tool_name="terminal",
+            args={"command": "curl -i http://10.10.10.5:8080/"},
+            task_id="ctf-curl-too-early",
+        )
+
+        assert result is not None
+        assert "Continue the current phase without the HTTP request" in result["message"]
+        assert "ctf_target_recon" in result["message"]
+        assert "Do not use delegate_task or a subagent to bypass" in result["message"]
+        assert "Deferred call id deferred-1" in result["message"]
+
+        state = _loads(handle_get_workflow_state({}, task_id="ctf-curl-too-early"))["state"]
+        assert state["deferred_tool_calls"][0]["tool_name"] == "terminal"
+        assert state["deferred_tool_calls"][0]["target_phase"] == "ctf_target_recon"
+
+        handle_record_artifact({"artifact_id": "challenge_type", "content": "web"}, task_id="ctf-curl-too-early")
+        handle_advance_phase({"rationale": "classified"}, task_id="ctf-curl-too-early")
+        next_action = _loads(handle_next_action({}, task_id="ctf-curl-too-early"))["next_action"]
+        assert next_action["phase_id"] == "ctf_target_recon"
+        assert next_action["deferred_tool_calls_ready"][0]["id"] == "deferred-1"
+
+    def test_ctf_delegate_task_cannot_bypass_non_delegation_phase(self):
+        from plugins.security.state import (
+            handle_advance_phase,
+            handle_record_artifact,
+            handle_start_workflow,
+            security_pre_tool_call,
+        )
+
+        handle_start_workflow({
+            "task_name": "web ctf",
+            "objective": "probe challenge web service",
+            "mode": "ctf",
+            "include_active_testing": True,
+        }, task_id="ctf-delegate-too-early")
+        handle_record_artifact({"artifact_id": "ctf_rules", "content": "rules"}, task_id="ctf-delegate-too-early")
+        handle_advance_phase({"rationale": "rules recorded"}, task_id="ctf-delegate-too-early")
+
+        result = security_pre_tool_call(
+            tool_name="delegate_task",
+            args={"goal": "curl http://10.10.10.5:8080/"},
+            task_id="ctf-delegate-too-early",
+        )
+
+        assert result is not None
+        assert "Do not use delegate_task or a subagent to bypass" in result["message"]
+
     def test_ctf_common_network_command_can_run_without_explicit_allowed_targets(self):
         from plugins.security.state import (
             handle_advance_phase,
