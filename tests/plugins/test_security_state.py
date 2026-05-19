@@ -246,6 +246,33 @@ class TestSecurityWorkflowHooks:
 
         assert result is None
 
+    def test_independent_subagent_context_cannot_bypass_sole_active_workflow(self):
+        from plugins.security.state import (
+            handle_advance_phase,
+            handle_record_artifact,
+            handle_start_workflow,
+            security_pre_tool_call,
+        )
+
+        handle_start_workflow({
+            "task_name": "web ctf",
+            "objective": "probe challenge web service",
+            "mode": "ctf",
+            "include_active_testing": True,
+        }, task_id="parent-only")
+        handle_record_artifact({"artifact_id": "ctf_rules", "content": "rules"}, task_id="parent-only")
+        handle_advance_phase({"rationale": "rules recorded"}, task_id="parent-only")
+
+        result = security_pre_tool_call(
+            tool_name="terminal",
+            args={"command": "curl -i http://10.10.10.5:8080/"},
+            task_id="independent-child",
+        )
+
+        assert result is not None
+        assert "Continue the current phase without the HTTP request" in result["message"]
+        assert "Do not use delegate_task or a subagent to bypass" in result["message"]
+
     def test_ctf_http_request_can_run_without_explicit_allowed_targets(self):
         from plugins.security.state import (
             handle_advance_phase,

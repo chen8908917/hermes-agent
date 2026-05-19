@@ -605,6 +605,11 @@ def security_pre_tool_call(
     state = _get_state(tool_args, {"task_id": task_id, "session_id": session_id})
 
     if not state:
+        if _active_workflow_count() > 1 and (
+            tool_name in SECURITY_ENFORCED_TOOL_NAMES
+            or (tool_name in OPERATIONAL_TOOL_NAMES and _looks_like_security_command(tool_args))
+        ):
+            return _block("Multiple active security workflows exist; pass workflow_id so phase and scope gates cannot be bypassed.")
         if tool_name in SECURITY_ENFORCED_TOOL_NAMES:
             return _block("Start a security workflow with security_start_workflow before using active security tools.")
         if tool_name in OPERATIONAL_TOOL_NAMES and _looks_like_security_command(tool_args):
@@ -739,7 +744,25 @@ def _get_state(args: dict[str, Any], kw: dict[str, Any]) -> dict[str, Any] | Non
         state = _WORKFLOWS.get(key)
         if state is not None:
             return state
+    return _sole_active_workflow()
+
+
+def _sole_active_workflow() -> dict[str, Any] | None:
+    active_by_id = {}
+    for state in _WORKFLOWS.values():
+        if isinstance(state, dict) and state.get("status") == "active":
+            active_by_id[str(state.get("workflow_id") or id(state))] = state
+    if len(active_by_id) == 1:
+        return next(iter(active_by_id.values()))
     return None
+
+
+def _active_workflow_count() -> int:
+    return len({
+        str(state.get("workflow_id") or id(state))
+        for state in _WORKFLOWS.values()
+        if isinstance(state, dict) and state.get("status") == "active"
+    })
 
 
 def _workflow_aliases(args: dict[str, Any], kw: dict[str, Any]) -> list[str]:
