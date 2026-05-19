@@ -301,6 +301,35 @@ class TestSecurityWorkflowHooks:
 
         assert result is None
 
+    def test_terminal_scope_ignores_url_path_file_names(self):
+        from plugins.security.state import (
+            handle_advance_phase,
+            handle_record_artifact,
+            handle_start_workflow,
+            security_pre_tool_call,
+        )
+
+        handle_start_workflow({
+            "task_name": "web ctf",
+            "objective": "probe challenge web service",
+            "mode": "ctf",
+            "allowed_targets": ["192.168.15.129"],
+            "include_active_testing": True,
+            "require_agent_dispatch": False,
+        }, task_id="ctf-url-path")
+        handle_record_artifact({"artifact_id": "ctf_rules", "content": "rules"}, task_id="ctf-url-path")
+        handle_advance_phase({"rationale": "rules recorded"}, task_id="ctf-url-path")
+        handle_record_artifact({"artifact_id": "challenge_type", "content": "web"}, task_id="ctf-url-path")
+        handle_advance_phase({"rationale": "classified"}, task_id="ctf-url-path")
+
+        result = security_pre_tool_call(
+            tool_name="terminal",
+            args={"command": "curl -i 'http://192.168.15.129/graffiti.php?id=1'"},
+            task_id="ctf-url-path",
+        )
+
+        assert result is None
+
     @pytest.mark.parametrize("phase_artifact", [
         ("ctf_target_recon", "challenge_type"),
         ("ctf_vulnerability_discovery", "ctf_attack_surface"),

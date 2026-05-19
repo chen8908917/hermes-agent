@@ -371,6 +371,7 @@ CTF_AUTO_SCOPE_COMMAND_RE = re.compile(
 )
 HOST_RE = re.compile(r"\b(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,63}\b")
 IPV4_RE = re.compile(r"(?<![\w.])(?:\d{1,3}\.){3}\d{1,3}(?![\w.])")
+URL_RE = re.compile(r"(?i)\bhttps?://[^\s'\"<>]+")
 
 _WORKFLOWS: dict[str, dict[str, Any]] = {}
 
@@ -1181,9 +1182,18 @@ def _targets_from_command(args: dict[str, Any]) -> list[str]:
     if not command:
         return []
     targets = []
-    targets.extend(HOST_RE.findall(command))
-    targets.extend(IPV4_RE.findall(command))
-    ignored_suffixes = (".py", ".sh", ".txt", ".md", ".json", ".yaml", ".yml", ".xml")
+    for match in URL_RE.findall(command):
+        host = _target_host(match.rstrip(".,;:)]}"))
+        if host:
+            targets.append(host)
+    command_without_urls = URL_RE.sub(" ", command)
+    targets.extend(HOST_RE.findall(command_without_urls))
+    targets.extend(IPV4_RE.findall(command_without_urls))
+    ignored_suffixes = (
+        ".py", ".sh", ".txt", ".md", ".json", ".yaml", ".yml", ".xml",
+        ".php", ".asp", ".aspx", ".jsp", ".html", ".htm", ".css", ".js",
+        ".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico",
+    )
     return [
         target for target in targets
         if not target.lower().endswith(ignored_suffixes)
