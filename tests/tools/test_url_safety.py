@@ -9,6 +9,8 @@ from tools.url_safety import (
     _is_blocked_ip,
     _global_allow_private_urls,
     _reset_allow_private_cache,
+    reset_scoped_private_url_allow,
+    set_scoped_private_url_allow,
 )
 
 import ipaddress
@@ -416,6 +418,39 @@ class TestAllowPrivateUrlsIntegration:
         """Empty URLs are still blocked."""
         monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "true")
         assert is_safe_url("") is False
+
+
+class TestScopedAllowPrivateUrls:
+    @pytest.fixture(autouse=True)
+    def _reset_cache(self, monkeypatch):
+        monkeypatch.delenv("HERMES_ALLOW_PRIVATE_URLS", raising=False)
+        _reset_allow_private_cache()
+        yield
+        _reset_allow_private_cache()
+
+    def test_private_ip_allowed_only_inside_scoped_override(self):
+        with patch("hermes_cli.config.read_raw_config", side_effect=Exception("no config")):
+            with patch("socket.getaddrinfo", return_value=[
+                (2, 1, 6, "", ("192.168.1.1", 0)),
+            ]):
+                assert is_safe_url("http://router.local") is False
+                token = set_scoped_private_url_allow(True)
+                try:
+                    assert is_safe_url("http://router.local") is True
+                finally:
+                    reset_scoped_private_url_allow(token)
+                assert is_safe_url("http://router.local") is False
+
+    def test_scoped_override_does_not_allow_metadata(self):
+        token = set_scoped_private_url_allow(True)
+        try:
+            with patch("socket.getaddrinfo", return_value=[
+                (2, 1, 6, "", ("169.254.169.254", 0)),
+            ]):
+                assert is_safe_url("http://169.254.169.254/latest/meta-data/") is False
+            assert is_safe_url("http://metadata.google.internal/computeMetadata/v1/") is False
+        finally:
+            reset_scoped_private_url_allow(token)
 
 
 class TestIsAlwaysBlockedUrl:

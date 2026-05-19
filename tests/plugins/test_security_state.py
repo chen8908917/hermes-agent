@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import socket
+from unittest.mock import patch
 
 import pytest
 
@@ -368,6 +370,97 @@ class TestSecurityWorkflowHooks:
         )
 
         assert result is None
+
+    def test_ctf_relaxed_web_extract_enables_scoped_private_urls(self, monkeypatch):
+        from plugins.security.state import (
+            handle_advance_phase,
+            handle_record_artifact,
+            handle_start_workflow,
+            security_post_tool_call,
+            security_pre_tool_call,
+        )
+        from tools.url_safety import _reset_allow_private_cache, is_safe_url
+
+        monkeypatch.delenv("HERMES_ALLOW_PRIVATE_URLS", raising=False)
+        _reset_allow_private_cache()
+        handle_start_workflow({
+            "task_name": "web ctf",
+            "objective": "probe challenge web service",
+            "mode": "ctf",
+            "include_active_testing": True,
+            "require_agent_dispatch": False,
+        }, task_id="ctf-private-web")
+        handle_record_artifact({"artifact_id": "ctf_rules", "content": "rules"}, task_id="ctf-private-web")
+        handle_advance_phase({"rationale": "rules recorded"}, task_id="ctf-private-web")
+        handle_record_artifact({"artifact_id": "challenge_type", "content": "web"}, task_id="ctf-private-web")
+        handle_advance_phase({"rationale": "classified"}, task_id="ctf-private-web")
+
+        with patch("hermes_cli.config.read_raw_config", side_effect=Exception("no config")):
+            with patch("socket.getaddrinfo", return_value=[
+                (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("192.168.15.129", 0)),
+            ]):
+                assert is_safe_url("http://192.168.15.129/") is False
+                result = security_pre_tool_call(
+                    tool_name="web_extract",
+                    args={"urls": ["http://192.168.15.129/"]},
+                    task_id="ctf-private-web",
+                    tool_call_id="call-private-web",
+                )
+                assert result is None
+                assert is_safe_url("http://192.168.15.129/") is True
+
+                security_post_tool_call(
+                    tool_name="web_extract",
+                    args={"urls": ["http://192.168.15.129/"]},
+                    result=json.dumps({"success": True}),
+                    task_id="ctf-private-web",
+                    tool_call_id="call-private-web",
+                )
+                assert is_safe_url("http://192.168.15.129/") is False
+
+    def test_ctf_scoped_private_urls_still_blocks_metadata(self):
+        from plugins.security.state import (
+            handle_advance_phase,
+            handle_record_artifact,
+            handle_start_workflow,
+            security_post_tool_call,
+            security_pre_tool_call,
+        )
+        from tools.url_safety import is_safe_url
+
+        handle_start_workflow({
+            "task_name": "web ctf",
+            "objective": "probe challenge web service",
+            "mode": "ctf",
+            "include_active_testing": True,
+            "require_agent_dispatch": False,
+        }, task_id="ctf-metadata-floor")
+        handle_record_artifact({"artifact_id": "ctf_rules", "content": "rules"}, task_id="ctf-metadata-floor")
+        handle_advance_phase({"rationale": "rules recorded"}, task_id="ctf-metadata-floor")
+        handle_record_artifact({"artifact_id": "challenge_type", "content": "web"}, task_id="ctf-metadata-floor")
+        handle_advance_phase({"rationale": "classified"}, task_id="ctf-metadata-floor")
+
+        result = security_pre_tool_call(
+            tool_name="web_extract",
+            args={"urls": ["http://192.168.15.129/"]},
+            task_id="ctf-metadata-floor",
+            tool_call_id="call-metadata-floor",
+        )
+        assert result is None
+        try:
+            with patch("socket.getaddrinfo", return_value=[
+                (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("169.254.169.254", 0)),
+            ]):
+                assert is_safe_url("http://169.254.169.254/latest/meta-data/") is False
+            assert is_safe_url("http://metadata.google.internal/computeMetadata/v1/") is False
+        finally:
+            security_post_tool_call(
+                tool_name="web_extract",
+                args={"urls": ["http://192.168.15.129/"]},
+                result=json.dumps({"success": True}),
+                task_id="ctf-metadata-floor",
+                tool_call_id="call-metadata-floor",
+            )
 
     def test_terminal_scope_ignores_url_path_file_names(self):
         from plugins.security.state import (

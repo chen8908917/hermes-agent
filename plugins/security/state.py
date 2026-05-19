@@ -341,6 +341,21 @@ SECURITY_ANALYSIS_TOOLS = {
 OPERATIONAL_TOOL_NAMES = {"terminal", "process", "execute_code"}
 DELEGATION_TOOL_NAMES = {"delegate_task"}
 FILE_TOOL_NAMES = {"read_file", "search_files", "write_file", "patch"}
+WEB_TOOL_NAMES = {"web_extract"}
+MEDIA_URL_TOOL_NAMES = {"vision_analyze", "video_analyze"}
+BROWSER_TOOL_NAMES = {
+    "browser_navigate",
+    "browser_snapshot",
+    "browser_click",
+    "browser_type",
+    "browser_scroll",
+    "browser_back",
+    "browser_press",
+    "browser_get_images",
+    "browser_vision",
+    "browser_console",
+}
+PRIVATE_URL_SCOPED_TOOL_NAMES = WEB_TOOL_NAMES | MEDIA_URL_TOOL_NAMES | BROWSER_TOOL_NAMES
 
 SECURITY_ENFORCED_TOOL_NAMES = (
     SECURITY_SCANNER_TOOLS
@@ -384,6 +399,9 @@ CTF_ACTIVE_TOOLS = (
     | WORKFLOW_META_TOOLS
     | DELEGATION_TOOL_NAMES
     | FILE_TOOL_NAMES
+    | WEB_TOOL_NAMES
+    | MEDIA_URL_TOOL_NAMES
+    | BROWSER_TOOL_NAMES
     | OPERATIONAL_TOOL_NAMES
     | SECURITY_SCANNER_TOOLS
     | SECURITY_PLAN_TOOLS
@@ -478,6 +496,7 @@ IPV4_RE = re.compile(r"(?<![\w.])(?:\d{1,3}\.){3}\d{1,3}(?![\w.])")
 URL_RE = re.compile(r"(?i)\bhttps?://[^\s'\"<>]+")
 
 _WORKFLOWS: dict[str, dict[str, Any]] = {}
+_PRIVATE_URL_ALLOW_TOKENS: dict[str, Any] = {}
 
 
 def handle_start_workflow(args: dict[str, Any], **kw: Any) -> str:
@@ -863,6 +882,8 @@ def security_pre_tool_call(
     tool_call_id: str = "",
 ) -> dict[str, str] | None:
     tool_args = args if isinstance(args, dict) else {}
+    private_url_key = _private_url_scope_key(tool_call_id, task_id, session_id, tool_name)
+    _reset_private_url_scope(private_url_key)
     state = _get_state(tool_args, {"task_id": task_id, "session_id": session_id})
 
     if not state:
@@ -920,6 +941,7 @@ def security_pre_tool_call(
     if repeat_blocker:
         return _block(repeat_blocker)
 
+    _maybe_enable_private_url_scope(private_url_key, state, tool_name)
     return None
 
 
@@ -933,6 +955,7 @@ def security_post_tool_call(
     tool_call_id: str = "",
     duration_ms: int = 0,
 ) -> None:
+    _reset_private_url_scope(_private_url_scope_key(tool_call_id, task_id, session_id, tool_name))
     tool_args = args if isinstance(args, dict) else {}
     state = _get_state(tool_args, {"task_id": task_id, "session_id": session_id})
     if not state or state.get("status") != "active":
@@ -985,6 +1008,8 @@ def security_post_tool_call(
 def reset_security_workflows() -> None:
     """Test helper: clear in-memory workflow state."""
     _WORKFLOWS.clear()
+    for key in list(_PRIVATE_URL_ALLOW_TOKENS):
+        _reset_private_url_scope(key)
 
 
 def _workflow_key(args: dict[str, Any], kw: dict[str, Any]) -> str:
@@ -1054,6 +1079,47 @@ def _relaxed_permissions(state: dict[str, Any]) -> bool:
     )
 
 
+def _private_url_scope_key(
+    tool_call_id: str,
+    task_id: str,
+    session_id: str,
+    tool_name: str,
+) -> str:
+    explicit = str(tool_call_id or "").strip()
+    if explicit:
+        return f"call:{explicit}"
+    return f"implicit:{session_id or '-'}:{task_id or '-'}:{tool_name or '-'}"
+
+
+def _maybe_enable_private_url_scope(
+    key: str,
+    state: dict[str, Any],
+    tool_name: str,
+) -> None:
+    if not _relaxed_permissions(state):
+        return
+    if tool_name not in PRIVATE_URL_SCOPED_TOOL_NAMES:
+        return
+    try:
+        from tools.url_safety import set_scoped_private_url_allow
+
+        _PRIVATE_URL_ALLOW_TOKENS[key] = set_scoped_private_url_allow(True)
+    except Exception:
+        return
+
+
+def _reset_private_url_scope(key: str) -> None:
+    token = _PRIVATE_URL_ALLOW_TOKENS.pop(key, None)
+    if token is None:
+        return
+    try:
+        from tools.url_safety import reset_scoped_private_url_allow
+
+        reset_scoped_private_url_allow(token)
+    except Exception:
+        return
+
+
 def _allowed_tools_for_state(state: dict[str, Any], phase_id: str) -> set[str]:
     allowed = set(PHASE_ALLOWED_TOOLS.get(phase_id, STATE_TOOL_NAMES | WORKFLOW_META_TOOLS))
     if not _relaxed_permissions(state):
@@ -1063,6 +1129,9 @@ def _allowed_tools_for_state(state: dict[str, Any], phase_id: str) -> set[str]:
         | STATE_TOOL_NAMES
         | WORKFLOW_META_TOOLS
         | FILE_TOOL_NAMES
+        | WEB_TOOL_NAMES
+        | MEDIA_URL_TOOL_NAMES
+        | BROWSER_TOOL_NAMES
         | OPERATIONAL_TOOL_NAMES
         | SECURITY_SCANNER_TOOLS
         | SECURITY_PLAN_TOOLS
@@ -1523,6 +1592,8 @@ def _ctf_command_allowed_without_scope(
     if tool_name in OPERATIONAL_TOOL_NAMES:
         command = _command_text(args)
         return bool(CTF_AUTO_SCOPE_COMMAND_RE.search(command) or re.search(r"(?i)\bhttps?://", command))
+    if tool_name in PRIVATE_URL_SCOPED_TOOL_NAMES:
+        return bool(targets)
     if tool_name in SECURITY_ENFORCED_TOOL_NAMES | SECURITY_PLAN_TOOLS:
         return True
     return False
@@ -1539,6 +1610,8 @@ def _relaxed_command_allowed_without_scope(
     if state.get("mode") not in {"ctf", "range"}:
         return False
     if tool_name in OPERATIONAL_TOOL_NAMES:
+        return bool(targets)
+    if tool_name in PRIVATE_URL_SCOPED_TOOL_NAMES:
         return bool(targets)
     if tool_name in SECURITY_ENFORCED_TOOL_NAMES | SECURITY_PLAN_TOOLS | SECURITY_SCANNER_TOOLS:
         return True
@@ -1624,11 +1697,11 @@ def _command_text(args: dict[str, Any]) -> str:
 
 def _targets_from_args(args: dict[str, Any]) -> list[str]:
     targets = []
-    for key in ("target", "domain", "url", "host"):
+    for key in ("target", "domain", "url", "host", "image_url", "video_url"):
         value = str(args.get(key) or "").strip()
         if value:
             targets.append(_target_host(value))
-    for key in ("targets", "requested_targets"):
+    for key in ("targets", "requested_targets", "urls"):
         value = args.get(key)
         if isinstance(value, list):
             targets.extend(_target_host(str(item)) for item in value)

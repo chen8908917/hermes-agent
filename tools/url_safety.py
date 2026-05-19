@@ -23,6 +23,7 @@ Limitations (documented, not fixable at pre-flight level):
     where redirect handling is on their servers.
 """
 
+import contextvars
 import ipaddress
 import logging
 import os
@@ -75,6 +76,28 @@ _CGNAT_NETWORK = ipaddress.ip_network("100.64.0.0/10")
 # Cached after first read so we don't hit the filesystem on every URL check.
 _allow_private_resolved = False
 _cached_allow_private: bool = False
+_scoped_allow_private_urls: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "hermes_scoped_allow_private_urls",
+    default=False,
+)
+
+
+def set_scoped_private_url_allow(allowed: bool = True) -> contextvars.Token[bool]:
+    """Temporarily allow ordinary private URLs in the current execution context.
+
+    This is used by scoped security workflows such as CTF/range tasks. It does
+    not override the always-blocked cloud metadata floor.
+    """
+    return _scoped_allow_private_urls.set(bool(allowed))
+
+
+def reset_scoped_private_url_allow(token: contextvars.Token[bool]) -> None:
+    """Reset a scoped private URL override created by set_scoped_private_url_allow."""
+    _scoped_allow_private_urls.reset(token)
+
+
+def _scoped_private_urls_allowed() -> bool:
+    return bool(_scoped_allow_private_urls.get(False))
 
 
 def _global_allow_private_urls() -> bool:
@@ -129,10 +152,11 @@ def _global_allow_private_urls() -> bool:
 
 
 def _reset_allow_private_cache() -> None:
-    """Reset the cached toggle — only for tests."""
+    """Reset the cached toggle and scoped override. Only for tests."""
     global _allow_private_resolved, _cached_allow_private
     _allow_private_resolved = False
     _cached_allow_private = False
+    _scoped_allow_private_urls.set(False)
 
 
 def _is_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
@@ -274,8 +298,9 @@ def is_safe_url(url: str) -> bool:
             logger.warning("Blocked request to internal hostname: %s", hostname)
             return False
 
-        # Check the global toggle AFTER blocking metadata hostnames
-        allow_all_private = _global_allow_private_urls()
+        # Check scoped/global toggles AFTER blocking metadata hostnames.
+        scoped_allow_private = _scoped_private_urls_allowed()
+        allow_all_private = scoped_allow_private or _global_allow_private_urls()
 
         allow_private_ip = _allows_private_ip_resolution(hostname, scheme)
 
@@ -310,7 +335,12 @@ def is_safe_url(url: str) -> bool:
                 )
                 return False
 
-        if allow_all_private:
+        if scoped_allow_private:
+            logger.debug(
+                "Allowing private/internal resolution for scoped workflow: %s",
+                hostname,
+            )
+        elif allow_all_private:
             logger.debug(
                 "Allowing private/internal resolution (security.allow_private_urls=true): %s",
                 hostname,
