@@ -82,6 +82,73 @@ class TestSecurityWorkflowRuntime:
         }, task_id="ctf-repeat"))
         assert "already been rejected 2 times" in second["repeat_warning"]
 
+    def test_attack_paths_are_breadth_ranked_then_selected_for_depth(self):
+        from plugins.security.state import (
+            handle_advance_phase,
+            handle_get_workflow_state,
+            handle_record_artifact,
+            handle_record_attack_path,
+            handle_rank_attack_paths,
+            handle_select_attack_path,
+            handle_start_workflow,
+            handle_update_attack_path,
+        )
+
+        handle_start_workflow({
+            "task_name": "web ctf",
+            "objective": "solve web challenge",
+            "mode": "ctf",
+            "allowed_targets": ["192.168.15.129"],
+            "include_active_testing": True,
+        }, task_id="ctf-paths")
+        handle_record_artifact({"artifact_id": "ctf_rules", "content": "rules"}, task_id="ctf-paths")
+        handle_advance_phase({"rationale": "rules recorded"}, task_id="ctf-paths")
+        handle_record_artifact({"artifact_id": "challenge_type", "content": "web"}, task_id="ctf-paths")
+        handle_advance_phase({"rationale": "classified"}, task_id="ctf-paths")
+
+        low = _loads(handle_record_attack_path({
+            "title": "try static backup files",
+            "entrypoint": "/backup.zip",
+            "technique": "source_disclosure",
+            "success_probability": 2,
+            "impact": 3,
+            "cost": 1,
+            "noise": 1,
+        }, task_id="ctf-paths"))
+        high = _loads(handle_record_attack_path({
+            "title": "test graffiti id parameter",
+            "entrypoint": "/graffiti.php?id=1",
+            "technique": "sqli",
+            "success_probability": 4,
+            "impact": 4,
+            "cost": 1,
+            "noise": 1,
+            "privilege_gain": 3,
+        }, task_id="ctf-paths"))
+
+        assert low["success"] is True
+        assert high["success"] is True
+        state = _loads(handle_get_workflow_state({}, task_id="ctf-paths"))["state"]
+        assert "entrypoint_candidates" in state["available_artifacts"]
+        assert state["ranked_attack_paths"][0]["title"] == "test graffiti id parameter"
+
+        ranked = _loads(handle_rank_attack_paths({}, task_id="ctf-paths"))
+        assert ranked["ranked_attack_paths"][0]["title"] == "test graffiti id parameter"
+
+        selected = _loads(handle_select_attack_path({}, task_id="ctf-paths"))
+        assert selected["success"] is True
+        assert selected["active_attack_path"]["title"] == "test graffiti id parameter"
+
+        updated = _loads(handle_update_attack_path({
+            "status": "rejected",
+            "evidence": "no injection behavior observed",
+            "result": "parameter is static",
+            "score_adjustment": -5,
+        }, task_id="ctf-paths"))
+        assert updated["success"] is True
+        assert updated["active_attack_path"] is None
+        assert updated["ranked_attack_paths"][0]["title"] == "try static backup files"
+
 
 class TestSecurityWorkflowHooks:
     def test_blocks_security_terminal_command_without_workflow(self):

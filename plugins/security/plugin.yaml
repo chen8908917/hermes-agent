@@ -11,6 +11,10 @@ provides_tools:
   - security_advance_phase
   - security_record_hypothesis
   - security_mark_dead_end
+  - security_record_attack_path
+  - security_rank_attack_paths
+  - security_select_attack_path
+  - security_update_attack_path
   - security_scope_check
   - security_extract_iocs
   - security_normalize_findings

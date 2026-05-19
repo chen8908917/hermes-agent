@@ -187,6 +187,97 @@ SECURITY_MARK_DEAD_END_SCHEMA = {
 }
 
 
+SECURITY_RECORD_ATTACK_PATH_SCHEMA = {
+    "name": "security_record_attack_path",
+    "description": (
+        "Record a candidate attack/solution path discovered during breadth-first "
+        "reconnaissance. Use this before deep exploitation so paths can be ranked."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "path_id": {"type": "string", "default": ""},
+            "title": {"type": "string"},
+            "target": {"type": "string", "default": ""},
+            "entrypoint": {"type": "string", "default": ""},
+            "technique": {"type": "string", "default": ""},
+            "hypothesis": {"type": "string", "default": ""},
+            "evidence": {"type": "string", "default": ""},
+            "signals": {"type": "array", "items": {"type": "string"}, "default": []},
+            "prerequisites": {"type": "array", "items": {"type": "string"}, "default": []},
+            "success_probability": {"type": "integer", "minimum": 0, "maximum": 5, "default": 3},
+            "impact": {"type": "integer", "minimum": 0, "maximum": 5, "default": 3},
+            "cost": {"type": "integer", "minimum": 0, "maximum": 5, "default": 2},
+            "noise": {"type": "integer", "minimum": 0, "maximum": 5, "default": 1},
+            "privilege_gain": {"type": "integer", "minimum": 0, "maximum": 5, "default": 1},
+            "phase_id": {"type": "string", "default": ""},
+            "workflow_id": {"type": "string", "default": ""},
+        },
+        "required": ["title"],
+    },
+}
+
+
+SECURITY_RANK_ATTACK_PATHS_SCHEMA = {
+    "name": "security_rank_attack_paths",
+    "description": (
+        "Rank candidate attack paths by probability, impact, privilege gain, "
+        "cost, noise, and known dead ends. Returns the current priority queue."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "include_closed": {"type": "boolean", "default": False},
+            "workflow_id": {"type": "string", "default": ""},
+        },
+    },
+}
+
+
+SECURITY_SELECT_ATTACK_PATH_SCHEMA = {
+    "name": "security_select_attack_path",
+    "description": (
+        "Select one ranked attack path for focused depth-first validation. "
+        "If path_id is omitted, selects the highest-ranked open path."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "path_id": {"type": "string", "default": ""},
+            "rationale": {"type": "string", "default": ""},
+            "workflow_id": {"type": "string", "default": ""},
+        },
+    },
+}
+
+
+SECURITY_UPDATE_ATTACK_PATH_SCHEMA = {
+    "name": "security_update_attack_path",
+    "description": (
+        "Update the active or specified attack path after a depth-first attempt. "
+        "Use rejected/dead_end to return to the ranked queue, supported to continue, "
+        "or complete when the objective is achieved."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "path_id": {"type": "string", "default": ""},
+            "status": {
+                "type": "string",
+                "enum": ["queued", "selected", "testing", "supported", "rejected", "dead_end", "complete"],
+                "default": "testing",
+            },
+            "evidence": {"type": "string", "default": ""},
+            "result": {"type": "string", "default": ""},
+            "new_signals": {"type": "array", "items": {"type": "string"}, "default": []},
+            "next_steps": {"type": "array", "items": {"type": "string"}, "default": []},
+            "score_adjustment": {"type": "integer", "minimum": -10, "maximum": 10, "default": 0},
+            "workflow_id": {"type": "string", "default": ""},
+        },
+    },
+}
+
+
 STATE_TOOL_NAMES = {
     "security_start_workflow",
     "security_get_workflow_state",
@@ -195,6 +286,10 @@ STATE_TOOL_NAMES = {
     "security_advance_phase",
     "security_record_hypothesis",
     "security_mark_dead_end",
+    "security_record_attack_path",
+    "security_rank_attack_paths",
+    "security_select_attack_path",
+    "security_update_attack_path",
 }
 
 WORKFLOW_META_TOOLS = {
@@ -432,6 +527,8 @@ def handle_start_workflow(args: dict[str, Any], **kw: Any) -> str:
         "available_artifacts": [],
         "hypotheses": [],
         "dead_ends": [],
+        "attack_paths": [],
+        "active_attack_path_id": None,
         "deferred_tool_calls": [],
         "dispatch": {},
         "last_tool": None,
@@ -592,6 +689,156 @@ def handle_mark_dead_end(args: dict[str, Any], **kw: Any) -> str:
         "success": True,
         "workflow_id": state["workflow_id"],
         "dead_end": item,
+        "next_action": _next_action(state),
+    })
+
+
+def handle_record_attack_path(args: dict[str, Any], **kw: Any) -> str:
+    state = _get_state(args, kw)
+    if not state:
+        return _json({"success": False, "error": "no active security workflow", "workflow_id": _workflow_key(args, kw)})
+    title = str(args.get("title") or "").strip()
+    if not title:
+        return _json({"success": False, "error": "title is required"})
+
+    paths = state.setdefault("attack_paths", [])
+    path_id = str(args.get("path_id") or "").strip()
+    existing = _find_attack_path(state, path_id) if path_id else None
+    if not path_id:
+        path_id = f"path-{len(paths) + 1}"
+    phase_id = str(args.get("phase_id") or "").strip() or _current_phase_id(state)
+    item = existing or {
+        "path_id": path_id,
+        "created_at": time.time(),
+        "attempts": [],
+    }
+    item.update({
+        "path_id": path_id,
+        "phase_id": phase_id,
+        "title": title,
+        "target": str(args.get("target") or item.get("target") or "").strip(),
+        "entrypoint": str(args.get("entrypoint") or item.get("entrypoint") or "").strip(),
+        "technique": str(args.get("technique") or item.get("technique") or "").strip().lower(),
+        "hypothesis": str(args.get("hypothesis") or item.get("hypothesis") or "").strip(),
+        "evidence": str(args.get("evidence") or item.get("evidence") or "").strip(),
+        "signals": _dedupe(_string_list(item.get("signals")) + _string_list(args.get("signals"))),
+        "prerequisites": _dedupe(_string_list(item.get("prerequisites")) + _string_list(args.get("prerequisites"))),
+        "success_probability": _bounded_score(args.get("success_probability"), item.get("success_probability", 3)),
+        "impact": _bounded_score(args.get("impact"), item.get("impact", 3)),
+        "cost": _bounded_score(args.get("cost"), item.get("cost", 2)),
+        "noise": _bounded_score(args.get("noise"), item.get("noise", 1)),
+        "privilege_gain": _bounded_score(args.get("privilege_gain"), item.get("privilege_gain", 1)),
+        "status": str(item.get("status") or "queued"),
+        "updated_at": time.time(),
+    })
+    item["score"] = _attack_path_score(item)
+    if existing is None:
+        paths.append(item)
+    _sync_attack_path_artifact(state, phase_id)
+    state["updated_at"] = time.time()
+    return _json({
+        "success": True,
+        "workflow_id": state["workflow_id"],
+        "attack_path": deepcopy(item),
+        "ranked_attack_paths": _ranked_attack_paths(state),
+        "next_action": _next_action(state),
+    })
+
+
+def handle_rank_attack_paths(args: dict[str, Any], **kw: Any) -> str:
+    state = _get_state(args, kw)
+    if not state:
+        return _json({"success": False, "error": "no active security workflow", "workflow_id": _workflow_key(args, kw)})
+    include_closed = bool(args.get("include_closed", False))
+    ranked = _ranked_attack_paths(state, include_closed=include_closed)
+    return _json({
+        "success": True,
+        "workflow_id": state["workflow_id"],
+        "active_attack_path": _active_attack_path(state),
+        "ranked_attack_paths": ranked,
+        "next_action": _next_action(state),
+    })
+
+
+def handle_select_attack_path(args: dict[str, Any], **kw: Any) -> str:
+    state = _get_state(args, kw)
+    if not state:
+        return _json({"success": False, "error": "no active security workflow", "workflow_id": _workflow_key(args, kw)})
+    path_id = str(args.get("path_id") or "").strip()
+    path = _find_attack_path(state, path_id) if path_id else None
+    if path is None and not path_id:
+        ranked = _ranked_attack_paths(state)
+        if ranked:
+            path = _find_attack_path(state, ranked[0]["path_id"])
+    if path is None:
+        return _json({
+            "success": False,
+            "error": "no open attack path available to select",
+            "next_step": "Record breadth-first candidates with security_record_attack_path first.",
+            "ranked_attack_paths": _ranked_attack_paths(state),
+        })
+    path["status"] = "selected"
+    path["selected_at"] = time.time()
+    path["selection_rationale"] = str(args.get("rationale") or "").strip()
+    path["updated_at"] = time.time()
+    path["score"] = _attack_path_score(path)
+    state["active_attack_path_id"] = path["path_id"]
+    state["updated_at"] = time.time()
+    return _json({
+        "success": True,
+        "workflow_id": state["workflow_id"],
+        "active_attack_path": deepcopy(path),
+        "next_action": _next_action(state),
+    })
+
+
+def handle_update_attack_path(args: dict[str, Any], **kw: Any) -> str:
+    state = _get_state(args, kw)
+    if not state:
+        return _json({"success": False, "error": "no active security workflow", "workflow_id": _workflow_key(args, kw)})
+    path_id = str(args.get("path_id") or "").strip() or str(state.get("active_attack_path_id") or "")
+    path = _find_attack_path(state, path_id)
+    if path is None:
+        return _json({"success": False, "error": "attack path not found", "path_id": path_id})
+
+    status = str(args.get("status") or "testing").strip().lower()
+    if status not in {"queued", "selected", "testing", "supported", "rejected", "dead_end", "complete"}:
+        return _json({"success": False, "error": "invalid attack path status", "status": status})
+    attempt = {
+        "status": status,
+        "phase_id": _current_phase_id(state),
+        "evidence": str(args.get("evidence") or "").strip(),
+        "result": str(args.get("result") or "").strip(),
+        "new_signals": _string_list(args.get("new_signals")),
+        "next_steps": _string_list(args.get("next_steps")),
+        "recorded_at": time.time(),
+    }
+    path.setdefault("attempts", []).append(attempt)
+    path["status"] = status
+    path["evidence"] = attempt["evidence"] or path.get("evidence", "")
+    path["signals"] = _dedupe(_string_list(path.get("signals")) + attempt["new_signals"])
+    path["next_steps"] = attempt["next_steps"]
+    path["score_adjustment"] = int(path.get("score_adjustment") or 0) + _bounded_adjustment(args.get("score_adjustment"))
+    path["updated_at"] = time.time()
+    path["score"] = _attack_path_score(path)
+    if status in {"rejected", "dead_end", "complete"} and state.get("active_attack_path_id") == path["path_id"]:
+        state["active_attack_path_id"] = None
+    if status == "dead_end":
+        state["dead_ends"].append({
+            "phase_id": _current_phase_id(state),
+            "technique": str(path.get("technique") or path["path_id"]),
+            "reason": attempt["result"] or attempt["evidence"] or "attack path exhausted",
+            "attack_path_id": path["path_id"],
+            "recorded_at": time.time(),
+        })
+    _sync_attack_path_artifact(state, _current_phase_id(state))
+    state["updated_at"] = time.time()
+    return _json({
+        "success": True,
+        "workflow_id": state["workflow_id"],
+        "attack_path": deepcopy(path),
+        "active_attack_path": _active_attack_path(state),
+        "ranked_attack_paths": _ranked_attack_paths(state),
         "next_action": _next_action(state),
     })
 
@@ -810,6 +1057,9 @@ def _public_state(state: dict[str, Any]) -> dict[str, Any]:
         "artifact_count": len(state["artifacts"]),
         "hypothesis_count": len(state["hypotheses"]),
         "dead_ends": state["dead_ends"][-5:],
+        "attack_path_count": len(state.get("attack_paths", [])),
+        "active_attack_path": _active_attack_path(state),
+        "ranked_attack_paths": _ranked_attack_paths(state)[:5],
         "deferred_tool_calls": state.get("deferred_tool_calls", [])[-10:],
         "dispatch": state["dispatch"],
         "require_agent_dispatch": state["require_agent_dispatch"],
@@ -828,6 +1078,7 @@ def _next_action(state: dict[str, Any]) -> dict[str, Any]:
     dispatch_blocker = _dispatch_blocker(state, phase_id)
     repeated = _latest_repeat_warning(state)
     deferred_ready = _deferred_calls_for_phase(state, phase_id)
+    path_strategy = _path_strategy(state, phase_id)
     return {
         "action": "execute_current_phase",
         "phase_id": phase_id,
@@ -840,8 +1091,9 @@ def _next_action(state: dict[str, Any]) -> dict[str, Any]:
         "dispatch_blocker": dispatch_blocker,
         "allowed_tools": sorted(PHASE_ALLOWED_TOOLS.get(phase_id, set())),
         "repeat_warning": repeated,
+        "path_strategy": path_strategy,
         "deferred_tool_calls_ready": deferred_ready,
-        "instructions": _phase_instructions(state, phase_id, dispatch_blocker, missing, repeated),
+        "instructions": _phase_instructions(state, phase_id, dispatch_blocker, missing, repeated, path_strategy),
     }
 
 
@@ -851,6 +1103,7 @@ def _phase_instructions(
     dispatch_blocker: str | None,
     missing: list[str],
     repeated: str | None,
+    path_strategy: dict[str, Any] | None = None,
 ) -> list[str]:
     instructions = []
     if dispatch_blocker:
@@ -859,6 +1112,8 @@ def _phase_instructions(
         instructions.append(repeated)
     if missing:
         instructions.append("Record at least one exit artifact before advancing: " + ", ".join(missing))
+    if path_strategy and path_strategy.get("instruction"):
+        instructions.append(str(path_strategy["instruction"]))
     if phase_id in DISPATCH_REQUIRED_PHASES and not dispatch_blocker:
         instructions.append("Merge handoffs with security_collect_agent_handoffs before advancing.")
     instructions.append("Call security_advance_phase only after the phase exit criteria are met.")
@@ -1035,6 +1290,150 @@ def _record_artifact(
     if artifact_id not in state["available_artifacts"]:
         state["available_artifacts"].append(artifact_id)
     state["updated_at"] = time.time()
+
+
+def _find_attack_path(state: dict[str, Any], path_id: str) -> dict[str, Any] | None:
+    if not path_id:
+        return None
+    for path in state.get("attack_paths", []):
+        if isinstance(path, dict) and path.get("path_id") == path_id:
+            return path
+    return None
+
+
+def _active_attack_path(state: dict[str, Any]) -> dict[str, Any] | None:
+    path = _find_attack_path(state, str(state.get("active_attack_path_id") or ""))
+    return deepcopy(path) if path else None
+
+
+def _ranked_attack_paths(state: dict[str, Any], include_closed: bool = False) -> list[dict[str, Any]]:
+    closed = {"rejected", "dead_end", "complete"}
+    ranked = []
+    for path in state.get("attack_paths", []):
+        if not isinstance(path, dict):
+            continue
+        if not include_closed and path.get("status") in closed:
+            continue
+        item = deepcopy(path)
+        item["score"] = _attack_path_score(item)
+        ranked.append(item)
+    ranked.sort(key=lambda item: (item.get("score", 0), item.get("updated_at", 0)), reverse=True)
+    return ranked
+
+
+def _attack_path_score(path: dict[str, Any]) -> int:
+    probability = _bounded_score(path.get("success_probability"), 3)
+    impact = _bounded_score(path.get("impact"), 3)
+    gain = _bounded_score(path.get("privilege_gain"), 1)
+    cost = _bounded_score(path.get("cost"), 2)
+    noise = _bounded_score(path.get("noise"), 1)
+    adjustment = _bounded_adjustment(path.get("score_adjustment"))
+    status = str(path.get("status") or "queued")
+    status_adjustment = {
+        "queued": 0,
+        "selected": 3,
+        "testing": 2,
+        "supported": 6,
+        "rejected": -12,
+        "dead_end": -20,
+        "complete": 10,
+    }.get(status, 0)
+    return (probability * 4) + (impact * 3) + (gain * 2) - (cost * 2) - noise + adjustment + status_adjustment
+
+
+def _sync_attack_path_artifact(state: dict[str, Any], phase_id: str) -> None:
+    ranked = _ranked_attack_paths(state, include_closed=True)
+    if not ranked:
+        return
+    if phase_id == "ctf_target_recon":
+        artifact_id = "entrypoint_candidates"
+    elif phase_id in {"ctf_vulnerability_discovery", "ctf_foothold"}:
+        artifact_id = "candidate_solution_paths"
+    elif phase_id == "vulnerability_analysis":
+        artifact_id = "validation_candidates"
+    else:
+        return
+    _record_artifact(
+        state,
+        artifact_id=artifact_id,
+        content={"ranked_attack_paths": ranked},
+        phase_id=phase_id,
+        source_tool="security_attack_path_queue",
+    )
+
+
+def _path_strategy(state: dict[str, Any], phase_id: str) -> dict[str, Any]:
+    active = _active_attack_path(state)
+    ranked = _ranked_attack_paths(state)
+    if active and phase_id in {"ctf_vulnerability_discovery", "ctf_foothold", "ctf_privilege_escalation", "ctf_flag_discovery", "validation_planning", "controlled_validation"}:
+        return {
+            "mode": "focused_depth",
+            "active_path_id": active["path_id"],
+            "active_path": active,
+            "instruction": (
+                "Continue focused validation of the active attack path. "
+                "After each attempt, call security_update_attack_path with supported, rejected, or dead_end."
+            ),
+        }
+    if phase_id in {"ctf_target_recon", "active_recon", "service_enumeration", "passive_recon"}:
+        return {
+            "mode": "breadth_map",
+            "open_path_count": len(ranked),
+            "top_paths": ranked[:3],
+            "instruction": (
+                "Prefer breadth-first mapping now: enumerate services, directories, inputs, and anomalies; "
+                "record each plausible route with security_record_attack_path before deep exploitation."
+            ),
+        }
+    if phase_id in {"ctf_vulnerability_discovery", "vulnerability_analysis", "validation_planning"}:
+        if ranked:
+            return {
+                "mode": "rank_then_depth",
+                "open_path_count": len(ranked),
+                "top_paths": ranked[:3],
+                "instruction": (
+                    "Rank the candidate paths with security_rank_attack_paths, then select the highest-value "
+                    "open path with security_select_attack_path for focused validation."
+                ),
+            }
+        return {
+            "mode": "needs_breadth_candidates",
+            "open_path_count": 0,
+            "instruction": (
+                "No open attack paths are recorded. Return to breadth mapping and use security_record_attack_path "
+                "instead of guessing a single exploitation route."
+            ),
+        }
+    if phase_id in {"ctf_foothold", "ctf_privilege_escalation", "ctf_flag_discovery", "controlled_validation"}:
+        if ranked:
+            return {
+                "mode": "select_next_depth_path",
+                "open_path_count": len(ranked),
+                "top_paths": ranked[:3],
+                "instruction": "Select the next ranked attack path, validate it, and update its status before switching paths.",
+            }
+        return {
+            "mode": "no_open_paths",
+            "open_path_count": 0,
+            "instruction": "No open attack paths remain; record a new candidate or mark the phase complete with evidence.",
+        }
+    return {"mode": "phase_default", "open_path_count": len(ranked), "top_paths": ranked[:3]}
+
+
+def _bounded_score(value: Any, default: int = 0) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = int(default)
+    return min(max(parsed, 0), 5)
+
+
+def _bounded_adjustment(value: Any) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = 0
+    return min(max(parsed, -10), 10)
 
 
 def _target_blocker(state: dict[str, Any], tool_name: str, args: dict[str, Any]) -> str | None:
