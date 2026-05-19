@@ -33,6 +33,24 @@ from .skill_ops import (
     handle_generate_skill,
     handle_merge_skills,
 )
+from .state import (
+    SECURITY_ADVANCE_PHASE_SCHEMA,
+    SECURITY_GET_WORKFLOW_STATE_SCHEMA,
+    SECURITY_MARK_DEAD_END_SCHEMA,
+    SECURITY_NEXT_ACTION_SCHEMA,
+    SECURITY_RECORD_ARTIFACT_SCHEMA,
+    SECURITY_RECORD_HYPOTHESIS_SCHEMA,
+    SECURITY_START_WORKFLOW_SCHEMA,
+    handle_advance_phase,
+    handle_get_workflow_state,
+    handle_mark_dead_end,
+    handle_next_action,
+    handle_record_artifact,
+    handle_record_hypothesis,
+    handle_start_workflow,
+    security_post_tool_call,
+    security_pre_tool_call,
+)
 from .scanners import (
     SECURITY_DIR_ENUM_PLAN_SCHEMA,
     SECURITY_DIR_ENUM_SCAN_SCHEMA,
@@ -70,6 +88,13 @@ from .workflows import (
 
 
 _TOOLS = (
+    ("security_start_workflow", SECURITY_START_WORKFLOW_SCHEMA, handle_start_workflow),
+    ("security_get_workflow_state", SECURITY_GET_WORKFLOW_STATE_SCHEMA, handle_get_workflow_state),
+    ("security_next_action", SECURITY_NEXT_ACTION_SCHEMA, handle_next_action),
+    ("security_record_artifact", SECURITY_RECORD_ARTIFACT_SCHEMA, handle_record_artifact),
+    ("security_advance_phase", SECURITY_ADVANCE_PHASE_SCHEMA, handle_advance_phase),
+    ("security_record_hypothesis", SECURITY_RECORD_HYPOTHESIS_SCHEMA, handle_record_hypothesis),
+    ("security_mark_dead_end", SECURITY_MARK_DEAD_END_SCHEMA, handle_mark_dead_end),
     ("security_scope_check", SECURITY_SCOPE_CHECK_SCHEMA, handle_scope_check),
     ("security_extract_iocs", SECURITY_EXTRACT_IOCS_SCHEMA, handle_extract_iocs),
     ("security_normalize_findings", SECURITY_NORMALIZE_FINDINGS_SCHEMA, handle_normalize_findings),
@@ -98,7 +123,7 @@ _TOOLS = (
 
 
 def register(ctx) -> None:
-    """Register the security helper tools."""
+    """Register the security helper tools and workflow enforcement hooks."""
     for name, schema, handler in _TOOLS:
         ctx.register_tool(
             name=name,
@@ -107,3 +132,5 @@ def register(ctx) -> None:
             handler=handler,
             emoji="security",
         )
+    ctx.register_hook("pre_tool_call", security_pre_tool_call)
+    ctx.register_hook("post_tool_call", security_post_tool_call)

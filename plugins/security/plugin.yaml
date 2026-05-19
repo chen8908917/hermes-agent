@@ -4,6 +4,13 @@ description: "Scoped security assessment helpers, workflow gates, and conservati
 author: NousResearch
 kind: backend
 provides_tools:
+  - security_start_workflow
+  - security_get_workflow_state
+  - security_next_action
+  - security_record_artifact
+  - security_advance_phase
+  - security_record_hypothesis
+  - security_mark_dead_end
   - security_scope_check
   - security_extract_iocs
   - security_normalize_findings
@@ -28,3 +35,6 @@ provides_tools:
   - security_collect_agent_handoffs
   - security_generate_skill
   - security_merge_skills
+provides_hooks:
+  - pre_tool_call
+  - post_tool_call

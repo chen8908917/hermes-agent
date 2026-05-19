@@ -170,6 +170,13 @@ def test_security_plugin_registers_tools():
     plugins_mod.discover_plugins(force=True)
 
     assert "security_scope_check" in registry.get_all_tool_names()
+    assert "security_start_workflow" in registry.get_all_tool_names()
+    assert "security_get_workflow_state" in registry.get_all_tool_names()
+    assert "security_next_action" in registry.get_all_tool_names()
+    assert "security_record_artifact" in registry.get_all_tool_names()
+    assert "security_advance_phase" in registry.get_all_tool_names()
+    assert "security_record_hypothesis" in registry.get_all_tool_names()
+    assert "security_mark_dead_end" in registry.get_all_tool_names()
     assert "security_build_workflow" in registry.get_all_tool_names()
     assert "security_workflow_gate" in registry.get_all_tool_names()
     assert "security_parse_nmap_xml" in registry.get_all_tool_names()
@@ -191,3 +198,7 @@ def test_security_plugin_registers_tools():
     assert "security_generate_skill" in registry.get_all_tool_names()
     assert "security_merge_skills" in registry.get_all_tool_names()
     assert registry.get_toolset_for_tool("security_scope_check") == "security"
+
+    manager = plugins_mod.get_plugin_manager()
+    assert "pre_tool_call" in manager._hooks
+    assert "post_tool_call" in manager._hooks
