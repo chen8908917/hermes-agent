@@ -326,6 +326,7 @@ class TestSecurityWorkflowHooks:
             "objective": "probe challenge web service",
             "mode": "ctf",
             "include_active_testing": True,
+            "permission_profile": "standard",
         }, task_id="parent-only")
         handle_record_artifact({"artifact_id": "ctf_rules", "content": "rules"}, task_id="parent-only")
         handle_advance_phase({"rationale": "rules recorded"}, task_id="parent-only")
@@ -469,6 +470,7 @@ class TestSecurityWorkflowHooks:
             "objective": "probe challenge web service",
             "mode": "ctf",
             "include_active_testing": True,
+            "permission_profile": "standard",
         }, task_id="ctf-curl-too-early")
         handle_record_artifact({"artifact_id": "ctf_rules", "content": "rules"}, task_id="ctf-curl-too-early")
         handle_advance_phase({"rationale": "rules recorded"}, task_id="ctf-curl-too-early")
@@ -562,6 +564,7 @@ class TestSecurityWorkflowHooks:
             "objective": "probe challenge host",
             "mode": "ctf",
             "include_active_testing": True,
+            "permission_profile": "standard",
         }, task_id="ctf-ping")
         handle_record_artifact({"artifact_id": "ctf_rules", "content": "rules"}, task_id="ctf-ping")
         handle_advance_phase({"rationale": "rules recorded"}, task_id="ctf-ping")
@@ -576,6 +579,32 @@ class TestSecurityWorkflowHooks:
 
         assert result is not None
         assert "Non-HTTP network targets require explicit allowed_targets" in result["message"]
+
+    def test_relaxed_ctf_allows_unlisted_network_commands_without_scope(self):
+        from plugins.security.state import (
+            handle_advance_phase,
+            handle_record_artifact,
+            handle_start_workflow,
+            security_pre_tool_call,
+        )
+
+        started = _loads(handle_start_workflow({
+            "task_name": "web ctf",
+            "objective": "probe challenge host",
+            "mode": "ctf",
+            "include_active_testing": True,
+        }, task_id="ctf-relaxed-ping"))
+        assert started["state"]["permission_profile"] == "relaxed"
+        handle_record_artifact({"artifact_id": "ctf_rules", "content": "rules"}, task_id="ctf-relaxed-ping")
+        handle_advance_phase({"rationale": "rules recorded"}, task_id="ctf-relaxed-ping")
+
+        result = security_pre_tool_call(
+            tool_name="terminal",
+            args={"command": "ping -c 1 10.10.10.5"},
+            task_id="ctf-relaxed-ping",
+        )
+
+        assert result is None
 
     def test_ctf_http_request_respects_denied_targets(self):
         from plugins.security.state import (

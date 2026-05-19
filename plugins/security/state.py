@@ -58,6 +58,15 @@ SECURITY_START_WORKFLOW_SCHEMA = {
                 ),
                 "default": False,
             },
+            "permission_profile": {
+                "type": "string",
+                "enum": ["standard", "relaxed"],
+                "description": (
+                    "Permission strictness for phase and scope gates. When omitted, "
+                    "CTF/range default to relaxed and assessment/defensive default to standard."
+                ),
+                "default": "relaxed",
+            },
             "workflow_id": {
                 "type": "string",
                 "description": "Optional explicit workflow id. Defaults to task/session context.",
@@ -506,6 +515,7 @@ def handle_start_workflow(args: dict[str, Any], **kw: Any) -> str:
         if "require_agent_dispatch" in args
         else mode != "ctf"
     )
+    permission_profile = _permission_profile(args.get("permission_profile"), mode)
 
     state = {
         "workflow_id": key,
@@ -519,6 +529,7 @@ def handle_start_workflow(args: dict[str, Any], **kw: Any) -> str:
         "denied_targets": workflow_args["denied_targets"],
         "constraints": workflow_args["constraints"],
         "require_agent_dispatch": require_agent_dispatch,
+        "permission_profile": permission_profile,
         "phases": phases,
         "phase_index": 0,
         "completed_phases": [],
@@ -882,7 +893,7 @@ def security_pre_tool_call(
             return _block(f"Security workflow is in phase {phase_id}; cannot operate on phase {requested_phase}.")
         return None
 
-    allowed_tools = PHASE_ALLOWED_TOOLS.get(phase_id, STATE_TOOL_NAMES | WORKFLOW_META_TOOLS)
+    allowed_tools = _allowed_tools_for_state(state, phase_id)
 
     if tool_name in DELEGATION_TOOL_NAMES:
         if tool_name not in allowed_tools:
@@ -1029,6 +1040,36 @@ def _workflow_aliases(args: dict[str, Any], kw: dict[str, Any]) -> list[str]:
     return _dedupe(aliases)
 
 
+def _permission_profile(value: Any, mode: str) -> str:
+    requested = str(value or "").strip().lower()
+    if requested in {"standard", "relaxed"}:
+        return requested
+    return "relaxed" if mode in {"ctf", "range"} else "standard"
+
+
+def _relaxed_permissions(state: dict[str, Any]) -> bool:
+    return (
+        str(state.get("permission_profile") or "standard") == "relaxed"
+        and state.get("mode") in {"ctf", "range"}
+    )
+
+
+def _allowed_tools_for_state(state: dict[str, Any], phase_id: str) -> set[str]:
+    allowed = set(PHASE_ALLOWED_TOOLS.get(phase_id, STATE_TOOL_NAMES | WORKFLOW_META_TOOLS))
+    if not _relaxed_permissions(state):
+        return allowed
+    return (
+        allowed
+        | STATE_TOOL_NAMES
+        | WORKFLOW_META_TOOLS
+        | FILE_TOOL_NAMES
+        | OPERATIONAL_TOOL_NAMES
+        | SECURITY_SCANNER_TOOLS
+        | SECURITY_PLAN_TOOLS
+        | SECURITY_ANALYSIS_TOOLS
+    )
+
+
 def _current_phase(state: dict[str, Any]) -> dict[str, Any] | None:
     phases = state.get("phases") if isinstance(state.get("phases"), list) else []
     index = int(state.get("phase_index") or 0)
@@ -1063,6 +1104,7 @@ def _public_state(state: dict[str, Any]) -> dict[str, Any]:
         "deferred_tool_calls": state.get("deferred_tool_calls", [])[-10:],
         "dispatch": state["dispatch"],
         "require_agent_dispatch": state["require_agent_dispatch"],
+        "permission_profile": state.get("permission_profile", "standard"),
         "allowed_targets": state["allowed_targets"],
         "denied_targets": state["denied_targets"],
         "last_tool": state.get("last_tool"),
@@ -1089,7 +1131,7 @@ def _next_action(state: dict[str, Any]) -> dict[str, Any]:
         "missing_exit_artifacts": missing,
         "dispatch_required": _phase_requires_dispatch(state, phase_id),
         "dispatch_blocker": dispatch_blocker,
-        "allowed_tools": sorted(PHASE_ALLOWED_TOOLS.get(phase_id, set())),
+        "allowed_tools": sorted(_allowed_tools_for_state(state, phase_id)),
         "repeat_warning": repeated,
         "path_strategy": path_strategy,
         "deferred_tool_calls_ready": deferred_ready,
@@ -1170,7 +1212,7 @@ def _next_phase_allowing_tool(state: dict[str, Any], tool_name: str) -> str:
     start = int(state.get("phase_index") or 0) + 1
     for phase in phases[start:]:
         phase_id = str(phase.get("id") or "")
-        if tool_name in PHASE_ALLOWED_TOOLS.get(phase_id, set()):
+        if tool_name in _allowed_tools_for_state(state, phase_id):
             return phase_id
     return ""
 
@@ -1446,7 +1488,7 @@ def _target_blocker(state: dict[str, Any], tool_name: str, args: dict[str, Any])
     allowed_targets = _string_list(state.get("allowed_targets"))
     denied_targets = _string_list(state.get("denied_targets"))
     if not allowed_targets:
-        if _ctf_command_allowed_without_scope(state, tool_name, args, targets):
+        if _relaxed_command_allowed_without_scope(state, tool_name, args, targets):
             for target in targets:
                 decision = _scope_decision(target, [target], denied_targets)
                 if not decision["allowed"]:
@@ -1482,6 +1524,23 @@ def _ctf_command_allowed_without_scope(
         command = _command_text(args)
         return bool(CTF_AUTO_SCOPE_COMMAND_RE.search(command) or re.search(r"(?i)\bhttps?://", command))
     if tool_name in SECURITY_ENFORCED_TOOL_NAMES | SECURITY_PLAN_TOOLS:
+        return True
+    return False
+
+
+def _relaxed_command_allowed_without_scope(
+    state: dict[str, Any],
+    tool_name: str,
+    args: dict[str, Any],
+    targets: list[str],
+) -> bool:
+    if not _relaxed_permissions(state):
+        return _ctf_command_allowed_without_scope(state, tool_name, args, targets)
+    if state.get("mode") not in {"ctf", "range"}:
+        return False
+    if tool_name in OPERATIONAL_TOOL_NAMES:
+        return bool(targets)
+    if tool_name in SECURITY_ENFORCED_TOOL_NAMES | SECURITY_PLAN_TOOLS | SECURITY_SCANNER_TOOLS:
         return True
     return False
 
