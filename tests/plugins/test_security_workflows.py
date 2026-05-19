@@ -209,6 +209,33 @@ class TestSecurityWorkflowGate:
         assert result["allowed"] is False
         assert "requested network targets require explicit allowed_targets" in result["blockers"]
 
+    def test_gate_allows_ctf_http_target_without_explicit_scope(self):
+        from plugins.security.workflows import handle_workflow_gate
+
+        result = _loads(handle_workflow_gate({
+            "phase_id": "ctf_target_recon",
+            "mode": "ctf",
+            "requested_targets": ["http://challenge.example.com:8080/"],
+            "available_artifacts": ["challenge_type"],
+        }))
+
+        assert result["allowed"] is True
+        assert result["decision"] == "proceed"
+
+    def test_gate_blocks_ctf_http_target_matching_denied_scope(self):
+        from plugins.security.workflows import handle_workflow_gate
+
+        result = _loads(handle_workflow_gate({
+            "phase_id": "ctf_target_recon",
+            "mode": "ctf",
+            "requested_targets": ["http://blocked.example.com/"],
+            "denied_targets": ["blocked.example.com"],
+            "available_artifacts": ["challenge_type"],
+        }))
+
+        assert result["allowed"] is False
+        assert any("matched denied scope" in blocker for blocker in result["blockers"])
+
     def test_gate_blocks_ctf_phase_outside_ctf_mode(self):
         from plugins.security.workflows import handle_workflow_gate
 

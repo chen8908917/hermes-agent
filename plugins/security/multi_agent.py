@@ -95,6 +95,11 @@ SECURITY_DISPATCH_AGENT_TASKS_SCHEMA = {
                 "maximum": 8,
                 "default": 4,
             },
+            "workflow_id": {
+                "type": "string",
+                "description": "Optional security workflow id to include in sub-agent prompts.",
+                "default": "",
+            },
         },
         "required": ["phase_id", "objective"],
     },
@@ -285,6 +290,7 @@ def handle_dispatch_agent_tasks(args: dict[str, Any], **_: Any) -> str:
     allowed_targets = _string_list(args.get("allowed_targets"))
     denied_targets = _string_list(args.get("denied_targets"))
     max_parallel = _bounded_int(args.get("max_parallel", 4), 1, 8)
+    workflow_id = str(args.get("workflow_id") or "").strip()
 
     phase = next((item for item in _phase_catalog(mode) if item["id"] == phase_id), None)
     if phase is None:
@@ -304,6 +310,7 @@ def handle_dispatch_agent_tasks(args: dict[str, Any], **_: Any) -> str:
             phase=phase,
             objective=objective,
             targets=targets,
+            workflow_id=workflow_id,
             available_artifacts=_string_list(args.get("available_artifacts")),
             findings=_object_list(args.get("findings")),
             blocked=bool(scope_blockers),
@@ -399,6 +406,7 @@ def _dispatch_packet(
     phase: dict[str, Any],
     objective: str,
     targets: list[str],
+    workflow_id: str,
     available_artifacts: list[str],
     findings: list[dict[str, Any]],
     blocked: bool,
@@ -410,6 +418,7 @@ def _dispatch_packet(
         f"Phase: {phase['id']} - {phase['name']}\n"
         f"Objective: {objective or phase['objective']}\n"
         f"Targets: {', '.join(targets) if targets else 'none provided'}\n"
+        f"Security workflow id: {workflow_id or 'inherit from session'}\n"
         "Stay within the supplied workflow phase, use only allowed tools, and return a JSON handoff."
     )
     if blocked:
@@ -423,6 +432,7 @@ def _dispatch_packet(
         "allowed_tools": role["allowed_tools"],
         "inputs": {
             "targets": targets,
+            "workflow_id": workflow_id,
             "available_artifacts": available_artifacts,
             "finding_count": len(findings),
         },

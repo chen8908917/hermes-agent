@@ -201,3 +201,134 @@ class TestSecurityWorkflowHooks:
         assert result is not None
         assert "not allowed during security phase intake_authorization" in result["message"]
 
+    def test_subagent_can_inherit_workflow_by_session_id(self):
+        from plugins.security.state import (
+            handle_advance_phase,
+            handle_record_artifact,
+            handle_start_workflow,
+            security_post_tool_call,
+            security_pre_tool_call,
+        )
+
+        handle_start_workflow({
+            "task_name": "web ctf",
+            "objective": "solve challenge",
+            "mode": "ctf",
+            "allowed_targets": ["*.ctf.local"],
+            "include_active_testing": True,
+            "require_agent_dispatch": True,
+        }, task_id="parent-task", session_id="shared-session")
+        handle_record_artifact({"artifact_id": "ctf_rules", "content": "rules"}, task_id="parent-task")
+        handle_advance_phase({"rationale": "rules recorded"}, task_id="parent-task")
+        handle_record_artifact({"artifact_id": "challenge_type", "content": "web"}, task_id="parent-task")
+        handle_advance_phase({"rationale": "classified"}, task_id="parent-task")
+        security_post_tool_call(
+            tool_name="security_dispatch_agent_tasks",
+            args={"phase_id": "ctf_target_recon"},
+            result=json.dumps({"success": True, "phase_id": "ctf_target_recon", "tasks": []}),
+            task_id="parent-task",
+            session_id="shared-session",
+        )
+        security_post_tool_call(
+            tool_name="security_collect_agent_handoffs",
+            args={"phase_id": "ctf_target_recon"},
+            result=json.dumps({"success": True, "phase_id": "ctf_target_recon", "merged": {}}),
+            task_id="parent-task",
+            session_id="shared-session",
+        )
+
+        result = security_pre_tool_call(
+            tool_name="terminal",
+            args={"command": "nmap box.ctf.local"},
+            task_id="child-task",
+            session_id="shared-session",
+        )
+
+        assert result is None
+
+    def test_ctf_http_request_can_run_without_explicit_allowed_targets(self):
+        from plugins.security.state import (
+            handle_advance_phase,
+            handle_record_artifact,
+            handle_start_workflow,
+            security_pre_tool_call,
+        )
+
+        handle_start_workflow({
+            "task_name": "web ctf",
+            "objective": "probe challenge web service",
+            "mode": "ctf",
+            "include_active_testing": True,
+            "require_agent_dispatch": False,
+        }, task_id="ctf-http")
+        handle_record_artifact({"artifact_id": "ctf_rules", "content": "rules"}, task_id="ctf-http")
+        handle_advance_phase({"rationale": "rules recorded"}, task_id="ctf-http")
+        handle_record_artifact({"artifact_id": "challenge_type", "content": "web"}, task_id="ctf-http")
+        handle_advance_phase({"rationale": "classified"}, task_id="ctf-http")
+
+        result = security_pre_tool_call(
+            tool_name="terminal",
+            args={"command": "curl -i http://10.10.10.5:8080/"},
+            task_id="ctf-http",
+        )
+
+        assert result is None
+
+    def test_ctf_non_http_network_command_still_requires_scope(self):
+        from plugins.security.state import (
+            handle_advance_phase,
+            handle_record_artifact,
+            handle_start_workflow,
+            security_pre_tool_call,
+        )
+
+        handle_start_workflow({
+            "task_name": "web ctf",
+            "objective": "probe challenge host",
+            "mode": "ctf",
+            "include_active_testing": True,
+            "require_agent_dispatch": False,
+        }, task_id="ctf-non-http")
+        handle_record_artifact({"artifact_id": "ctf_rules", "content": "rules"}, task_id="ctf-non-http")
+        handle_advance_phase({"rationale": "rules recorded"}, task_id="ctf-non-http")
+        handle_record_artifact({"artifact_id": "challenge_type", "content": "web"}, task_id="ctf-non-http")
+        handle_advance_phase({"rationale": "classified"}, task_id="ctf-non-http")
+
+        result = security_pre_tool_call(
+            tool_name="terminal",
+            args={"command": "nmap 10.10.10.5"},
+            task_id="ctf-non-http",
+        )
+
+        assert result is not None
+        assert "Non-HTTP network targets require explicit allowed_targets" in result["message"]
+
+    def test_ctf_http_request_respects_denied_targets(self):
+        from plugins.security.state import (
+            handle_advance_phase,
+            handle_record_artifact,
+            handle_start_workflow,
+            security_pre_tool_call,
+        )
+
+        handle_start_workflow({
+            "task_name": "web ctf",
+            "objective": "probe challenge web service",
+            "mode": "ctf",
+            "denied_targets": ["10.10.10.5"],
+            "include_active_testing": True,
+            "require_agent_dispatch": False,
+        }, task_id="ctf-http-denied")
+        handle_record_artifact({"artifact_id": "ctf_rules", "content": "rules"}, task_id="ctf-http-denied")
+        handle_advance_phase({"rationale": "rules recorded"}, task_id="ctf-http-denied")
+        handle_record_artifact({"artifact_id": "challenge_type", "content": "web"}, task_id="ctf-http-denied")
+        handle_advance_phase({"rationale": "classified"}, task_id="ctf-http-denied")
+
+        result = security_pre_tool_call(
+            tool_name="terminal",
+            args={"command": "curl -i http://10.10.10.5:8080/"},
+            task_id="ctf-http-denied",
+        )
+
+        assert result is not None
+        assert "matched denied scope" in result["message"]

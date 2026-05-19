@@ -416,6 +416,8 @@ def handle_start_workflow(args: dict[str, Any], **kw: Any) -> str:
         "workflow": workflow,
     }
     _WORKFLOWS[key] = state
+    for alias in _workflow_aliases(args, kw):
+        _WORKFLOWS[alias] = state
     return _json({
         "success": True,
         "workflow_id": key,
@@ -711,7 +713,25 @@ def _workflow_key(args: dict[str, Any], kw: dict[str, Any]) -> str:
 
 
 def _get_state(args: dict[str, Any], kw: dict[str, Any]) -> dict[str, Any] | None:
-    return _WORKFLOWS.get(_workflow_key(args, kw))
+    for key in [_workflow_key(args, kw), *_workflow_aliases(args, kw), "default"]:
+        state = _WORKFLOWS.get(key)
+        if state is not None:
+            return state
+    return None
+
+
+def _workflow_aliases(args: dict[str, Any], kw: dict[str, Any]) -> list[str]:
+    aliases = []
+    task_id = str(kw.get("task_id") or "").strip()
+    if task_id:
+        aliases.append(f"task:{task_id}")
+    session_id = str(kw.get("session_id") or "").strip()
+    if session_id:
+        aliases.append(f"session:{session_id}")
+    explicit = str(args.get("workflow_id") or "").strip()
+    if explicit:
+        aliases.append(explicit)
+    return _dedupe(aliases)
 
 
 def _current_phase(state: dict[str, Any]) -> dict[str, Any] | None:
@@ -858,14 +878,47 @@ def _target_blocker(state: dict[str, Any], tool_name: str, args: dict[str, Any])
     allowed_targets = _string_list(state.get("allowed_targets"))
     denied_targets = _string_list(state.get("denied_targets"))
     if not allowed_targets:
+        if _ctf_http_request_allowed_without_scope(state, tool_name, args, targets):
+            for target in targets:
+                decision = _scope_decision(target, [target], denied_targets)
+                if not decision["allowed"]:
+                    return f"Target {target} is outside authorized scope: {decision['reason']}"
+            return None
         if state.get("mode") == "ctf":
-            return "Network-looking targets require explicit allowed_targets even in CTF mode."
+            return "Non-HTTP network targets require explicit allowed_targets even in CTF mode."
         return "Active security workflow requires explicit allowed_targets for network targets."
     for target in targets:
         decision = _scope_decision(target, allowed_targets, denied_targets)
         if not decision["allowed"]:
             return f"Target {target} is outside authorized scope: {decision['reason']}"
     return None
+
+
+def _ctf_http_request_allowed_without_scope(
+    state: dict[str, Any],
+    tool_name: str,
+    args: dict[str, Any],
+    targets: list[str],
+) -> bool:
+    if state.get("mode") != "ctf":
+        return False
+    if _current_phase_id(state) not in {
+        "ctf_target_recon",
+        "ctf_vulnerability_discovery",
+        "ctf_foothold",
+        "ctf_flag_discovery",
+    }:
+        return False
+    if tool_name not in OPERATIONAL_TOOL_NAMES:
+        return False
+    if not targets:
+        return False
+    command = _command_text(args)
+    if not re.search(r"(?i)\bhttps?://", command):
+        return False
+    if not re.search(r"(?i)(\bcurl\b|\bwget\b|\bhttpie\b|\bpython\b|\brequests\b|fetch\()", command):
+        return False
+    return True
 
 
 def _repeat_blocker(state: dict[str, Any], tool_name: str, args: dict[str, Any]) -> str | None:
@@ -1027,4 +1080,3 @@ def _dedupe(values: list[str]) -> list[str]:
 
 def _json(value: dict[str, Any]) -> str:
     return json.dumps(value, ensure_ascii=False)
-
