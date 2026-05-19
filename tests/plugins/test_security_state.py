@@ -491,6 +491,72 @@ class TestSecurityWorkflowHooks:
 
         assert result is None
 
+    def test_terminal_scope_ignores_domains_inside_quoted_url_parameters(self):
+        from plugins.security.state import (
+            handle_advance_phase,
+            handle_record_artifact,
+            handle_start_workflow,
+            security_pre_tool_call,
+        )
+
+        handle_start_workflow({
+            "task_name": "web ctf",
+            "objective": "probe challenge web service",
+            "mode": "ctf",
+            "allowed_targets": ["192.168.15.129"],
+            "include_active_testing": True,
+            "require_agent_dispatch": False,
+            "permission_profile": "standard",
+        }, task_id="ctf-url-param-domain")
+        handle_record_artifact({"artifact_id": "ctf_rules", "content": "rules"}, task_id="ctf-url-param-domain")
+        handle_advance_phase({"rationale": "rules recorded"}, task_id="ctf-url-param-domain")
+        handle_record_artifact({"artifact_id": "challenge_type", "content": "web"}, task_id="ctf-url-param-domain")
+        handle_advance_phase({"rationale": "classified"}, task_id="ctf-url-param-domain")
+
+        result = security_pre_tool_call(
+            tool_name="terminal",
+            args={
+                "command": (
+                    "curl -s \"http://192.168.15.129/rce.php?"
+                    "c=echo%20admin.com%20test.com%20%26%26%20ls%20-la\""
+                )
+            },
+            task_id="ctf-url-param-domain",
+        )
+
+        assert result is None
+
+    def test_terminal_scope_still_blocks_domains_outside_url_parameters(self):
+        from plugins.security.state import (
+            handle_advance_phase,
+            handle_record_artifact,
+            handle_start_workflow,
+            security_pre_tool_call,
+        )
+
+        handle_start_workflow({
+            "task_name": "web ctf",
+            "objective": "probe challenge web service",
+            "mode": "ctf",
+            "allowed_targets": ["192.168.15.129"],
+            "include_active_testing": True,
+            "require_agent_dispatch": False,
+            "permission_profile": "standard",
+        }, task_id="ctf-real-external-domain")
+        handle_record_artifact({"artifact_id": "ctf_rules", "content": "rules"}, task_id="ctf-real-external-domain")
+        handle_advance_phase({"rationale": "rules recorded"}, task_id="ctf-real-external-domain")
+        handle_record_artifact({"artifact_id": "challenge_type", "content": "web"}, task_id="ctf-real-external-domain")
+        handle_advance_phase({"rationale": "classified"}, task_id="ctf-real-external-domain")
+
+        result = security_pre_tool_call(
+            tool_name="terminal",
+            args={"command": "curl -s http://192.168.15.129/ && curl -s http://admin.com/"},
+            task_id="ctf-real-external-domain",
+        )
+
+        assert result is not None
+        assert "admin.com" in result["message"]
+
     @pytest.mark.parametrize("phase_artifact", [
         ("ctf_target_recon", "challenge_type"),
         ("ctf_vulnerability_discovery", "ctf_attack_surface"),

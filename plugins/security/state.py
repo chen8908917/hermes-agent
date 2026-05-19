@@ -494,6 +494,7 @@ CTF_AUTO_SCOPE_COMMAND_RE = re.compile(
 HOST_RE = re.compile(r"\b(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,63}\b")
 IPV4_RE = re.compile(r"(?<![\w.])(?:\d{1,3}\.){3}\d{1,3}(?![\w.])")
 URL_RE = re.compile(r"(?i)\bhttps?://[^\s'\"<>]+")
+QUOTED_URL_ARG_RE = re.compile(r"""(?is)(?:"[^"]*https?://[^"]*"|'[^']*https?://[^']*')""")
 
 _WORKFLOWS: dict[str, dict[str, Any]] = {}
 _PRIVATE_URL_ALLOW_TOKENS: dict[str, Any] = {}
@@ -1713,11 +1714,18 @@ def _targets_from_command(args: dict[str, Any]) -> list[str]:
     if not command:
         return []
     targets = []
-    for match in URL_RE.findall(command):
+    quoted_url_args = QUOTED_URL_ARG_RE.findall(command)
+    for quoted in quoted_url_args:
+        value = quoted[1:-1].strip()
+        host = _target_host(value)
+        if host:
+            targets.append(host)
+    command_without_quoted_urls = QUOTED_URL_ARG_RE.sub(" ", command)
+    for match in URL_RE.findall(command_without_quoted_urls):
         host = _target_host(match.rstrip(".,;:)]}"))
         if host:
             targets.append(host)
-    command_without_urls = URL_RE.sub(" ", command)
+    command_without_urls = URL_RE.sub(" ", command_without_quoted_urls)
     targets.extend(HOST_RE.findall(command_without_urls))
     targets.extend(IPV4_RE.findall(command_without_urls))
     ignored_suffixes = (
