@@ -183,6 +183,7 @@ def test_security_plugin_registers_tools():
     assert "security_nmap_plan" in registry.get_all_tool_names()
     assert "security_nmap_scan" in registry.get_all_tool_names()
     assert "security_dir_enum_plan" in registry.get_all_tool_names()
+    assert "security_dir_enum" in registry.get_all_tool_names()
     assert "security_dir_enum_scan" in registry.get_all_tool_names()
     assert "security_whois_lookup" in registry.get_all_tool_names()
     assert "security_subfinder_plan" in registry.get_all_tool_names()

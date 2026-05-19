@@ -21,6 +21,7 @@ provides_tools:
   - security_nmap_plan
   - security_nmap_scan
   - security_dir_enum_plan
+  - security_dir_enum
   - security_dir_enum_scan
   - security_whois_lookup
   - security_subfinder_plan

@@ -194,6 +194,13 @@ class TestReconAdapters:
         assert "-e" in result["argv"]
         assert "../../bad" not in result["argv"]
 
+    def test_dir_enum_schema_does_not_require_allowed_targets(self):
+        from plugins.security.scanners import SECURITY_DIR_ENUM_SCAN_SCHEMA
+
+        required = SECURITY_DIR_ENUM_SCAN_SCHEMA["parameters"]["required"]
+
+        assert required == ["target"]
+
     def test_dir_enum_scan_defaults_to_dry_run(self):
         from plugins.security.scanners import handle_dir_enum_scan
 
@@ -237,6 +244,40 @@ class TestReconAdapters:
         assert result["success"] is False
         assert result["executed"] is False
         assert result["error"] == "dirsearch executable not found on PATH"
+
+    def test_ctf_dir_enum_execution_allows_url_without_explicit_scope(self, monkeypatch):
+        from plugins.security import scanners
+
+        monkeypatch.setattr(scanners.shutil, "which", lambda name: None)
+        result = _loads(scanners.handle_dir_enum_scan({
+            "target": "https://box.ctf.local",
+            "mode": "ctf",
+            "tool": "dirsearch",
+            "execute": True,
+            "approvals": {},
+        }))
+
+        assert result["success"] is False
+        assert result["executed"] is False
+        assert result["error"] == "dirsearch executable not found on PATH"
+
+    def test_auto_dir_enum_uses_available_gobuster_wordlist(self, monkeypatch):
+        from plugins.security import scanners
+
+        monkeypatch.setattr(scanners.shutil, "which", lambda name: "/usr/bin/gobuster" if name == "gobuster" else None)
+        monkeypatch.setattr(scanners, "_default_wordlist", lambda: "/usr/share/wordlists/dirb/common.txt")
+
+        result = scanners.build_dir_enum_plan({
+            "target": "https://box.ctf.local",
+            "mode": "ctf",
+            "tool": "auto",
+            "execute": True,
+        })
+
+        assert result["success"] is True
+        assert result["tool"] == "gobuster"
+        assert result["argv"][:4] == ["gobuster", "dir", "-u", "https://box.ctf.local"]
+        assert "/usr/share/wordlists/dirb/common.txt" in result["argv"]
 
     def test_ctf_dir_enum_plan_allows_url_without_explicit_scope(self):
         from plugins.security.scanners import handle_dir_enum_plan

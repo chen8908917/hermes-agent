@@ -8,6 +8,7 @@ import re
 import shutil
 import subprocess
 import xml.etree.ElementTree as ET
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
@@ -94,7 +95,7 @@ SECURITY_NMAP_PLAN_SCHEMA = {
                 "default": 256,
             },
         },
-        "required": ["targets", "allowed_targets"],
+        "required": ["targets"],
     },
 }
 
@@ -132,7 +133,7 @@ SECURITY_NMAP_SCAN_SCHEMA = {
                 "default": 60,
             },
         },
-        "required": ["targets", "allowed_targets"],
+        "required": ["targets"],
     },
 }
 
@@ -180,8 +181,8 @@ SECURITY_DIR_ENUM_PLAN_SCHEMA = {
             **_TARGET_SCOPE_PROPERTIES,
             "tool": {
                 "type": "string",
-                "enum": ["dirsearch", "gobuster"],
-                "default": "dirsearch",
+                "enum": ["auto", "dirsearch", "gobuster"],
+                "default": "auto",
             },
             "wordlist": {
                 "type": "string",
@@ -201,7 +202,7 @@ SECURITY_DIR_ENUM_PLAN_SCHEMA = {
                 "default": 5,
             },
         },
-        "required": ["target", "allowed_targets"],
+        "required": ["target"],
     },
 }
 
@@ -227,8 +228,18 @@ SECURITY_DIR_ENUM_SCAN_SCHEMA = {
                 "default": 60,
             },
         },
-        "required": ["target", "allowed_targets"],
+        "required": ["target"],
     },
+}
+
+
+SECURITY_DIR_ENUM_SCHEMA = {
+    **SECURITY_DIR_ENUM_SCAN_SCHEMA,
+    "name": "security_dir_enum",
+    "description": (
+        "Compatibility alias for security_dir_enum_scan. Run scoped "
+        "dirsearch/gobuster enumeration with conservative limits."
+    ),
 }
 
 
@@ -249,7 +260,7 @@ SECURITY_WHOIS_LOOKUP_SCHEMA = {
                 "default": 15,
             },
         },
-        "required": ["target", "allowed_targets"],
+        "required": ["target"],
     },
 }
 
@@ -265,7 +276,7 @@ SECURITY_SUBFINDER_PLAN_SCHEMA = {
             "denied_targets": _TARGET_SCOPE_PROPERTIES["denied_targets"],
             "max_results": {"type": "integer", "minimum": 1, "maximum": 1000, "default": 200},
         },
-        "required": ["domain", "allowed_targets"],
+        "required": ["domain"],
     },
 }
 
@@ -280,7 +291,7 @@ SECURITY_SUBFINDER_SCAN_SCHEMA = {
             "execute": {"type": "boolean", "default": False},
             "timeout_seconds": {"type": "integer", "minimum": 5, "maximum": 180, "default": 60},
         },
-        "required": ["domain", "allowed_targets"],
+        "required": ["domain"],
     },
 }
 
@@ -298,7 +309,7 @@ SECURITY_SQLMAP_PLAN_SCHEMA = {
             "parameter": {"type": "string", "description": "Optional parameter name to test.", "default": ""},
             "approvals": {"type": "object", "default": {}},
         },
-        "required": ["target", "allowed_targets"],
+        "required": ["target"],
     },
 }
 
@@ -314,7 +325,7 @@ SECURITY_MSF_RPC_PLAN_SCHEMA = {
             "options": {"type": "object", "default": {}},
             "approvals": {"type": "object", "default": {}},
         },
-        "required": ["target", "allowed_targets", "module"],
+        "required": ["target", "module"],
     },
 }
 
@@ -331,7 +342,7 @@ SECURITY_HYDRA_PLAN_SCHEMA = {
             "password_count": {"type": "integer", "minimum": 1, "maximum": 200, "default": 10},
             "approvals": {"type": "object", "default": {}},
         },
-        "required": ["target", "allowed_targets", "service"],
+        "required": ["target", "service"],
     },
 }
 
@@ -490,7 +501,21 @@ def handle_dir_enum_scan(args: dict[str, Any], **_: Any) -> str:
 
     exe = shutil.which(plan["tool"])
     if not exe:
-        return _json({"success": False, "executed": False, "error": f"{plan['tool']} executable not found on PATH", "plan": plan})
+        available = {
+            "dirsearch": shutil.which("dirsearch"),
+            "gobuster": shutil.which("gobuster"),
+        }
+        return _json({
+            "success": False,
+            "executed": False,
+            "error": f"{plan['tool']} executable not found on PATH",
+            "available_alternatives": available,
+            "next_step": (
+                "Install dirsearch/gobuster, or retry security_dir_enum_scan "
+                "with tool='gobuster' and an explicit wordlist if gobuster is available."
+            ),
+            "plan": plan,
+        })
 
     argv = [exe, *plan["argv"][1:]]
     timeout_seconds = _bounded_int(args.get("timeout_seconds", 60), 5, 300)
@@ -796,15 +821,16 @@ def build_nmap_plan(args: dict[str, Any]) -> dict[str, Any]:
 
 def build_dir_enum_plan(args: dict[str, Any]) -> dict[str, Any]:
     target = str(args.get("target") or "").strip()
-    tool = str(args.get("tool") or "dirsearch").strip().lower()
+    requested_tool = str(args.get("tool") or "auto").strip().lower()
+    tool = _resolve_dir_enum_tool(requested_tool, bool(args.get("execute", False)))
     allowed_targets = _string_list(args.get("allowed_targets"))
     denied_targets = _string_list(args.get("denied_targets"))
     mode = _normalize_mode(args.get("mode"))
     rate_limit = _bounded_int(args.get("rate_limit", 5), 1, 50)
     errors = []
 
-    if tool not in {"dirsearch", "gobuster"}:
-        errors.append("tool must be dirsearch or gobuster")
+    if requested_tool not in {"auto", "dirsearch", "gobuster"}:
+        errors.append("tool must be auto, dirsearch, or gobuster")
     if not _is_http_url(target):
         errors.append("target must be an http or https URL")
     effective_allowed = allowed_targets or ([target] if mode == "ctf" else [])
@@ -814,6 +840,8 @@ def build_dir_enum_plan(args: dict[str, Any]) -> dict[str, Any]:
 
     extensions = _safe_extensions(args.get("extensions"))
     wordlist = str(args.get("wordlist") or "").strip()
+    if tool == "gobuster" and not wordlist:
+        wordlist = _default_wordlist()
     if wordlist and not _safe_local_path(wordlist):
         errors.append("wordlist path contains unsupported characters")
 
@@ -837,6 +865,7 @@ def build_dir_enum_plan(args: dict[str, Any]) -> dict[str, Any]:
     return {
         "success": True,
         "tool": tool,
+        "requested_tool": requested_tool,
         "target": target,
         "argv": argv,
         "command_preview": _argv_preview(argv),
@@ -1103,6 +1132,29 @@ def _safe_local_path(value: str) -> bool:
     if value.startswith("-"):
         return False
     return bool(re.match(r"^[A-Za-z0-9_./: -]+$", value))
+
+
+def _resolve_dir_enum_tool(requested_tool: str, execute: bool) -> str:
+    if requested_tool != "auto":
+        return requested_tool
+    if execute:
+        if shutil.which("dirsearch"):
+            return "dirsearch"
+        if shutil.which("gobuster"):
+            return "gobuster"
+    return "dirsearch"
+
+
+def _default_wordlist() -> str:
+    for candidate in (
+        "/usr/share/wordlists/dirb/common.txt",
+        "/usr/share/seclists/Discovery/Web-Content/common.txt",
+        "/usr/share/wordlists/seclists/Discovery/Web-Content/common.txt",
+        "/usr/share/wordlists/dirbuster/directory-list-2.3-small.txt",
+    ):
+        if Path(candidate).exists():
+            return candidate
+    return ""
 
 
 def _cidr_size_error(target: str, max_cidr_hosts: int) -> str | None:

@@ -161,7 +161,7 @@ _BASE_ROLES: list[dict[str, Any]] = [
         "id": "recon_agent",
         "name": "Recon Agent",
         "responsibility": "Collect and normalize host, service, directory, whois, and subdomain reconnaissance.",
-        "allowed_tools": ["security_nmap_plan", "security_nmap_scan", "security_dir_enum_plan", "security_dir_enum_scan", "security_whois_lookup", "security_subfinder_plan", "security_subfinder_scan"],
+        "allowed_tools": ["security_nmap_plan", "security_nmap_scan", "security_dir_enum_plan", "security_dir_enum", "security_dir_enum_scan", "security_whois_lookup", "security_subfinder_plan", "security_subfinder_scan"],
         "handoff_contract": ["assets", "services", "directories", "subdomains", "raw_evidence_refs"],
     },
     {
@@ -207,7 +207,7 @@ _CTF_ROLES: list[dict[str, Any]] = [
         "id": "ctf_recon_agent",
         "name": "CTF Recon Agent",
         "responsibility": "Map challenge services, files, endpoints, and observable behavior.",
-        "allowed_tools": ["security_nmap_scan", "security_dir_enum_scan", "security_tshark_capture", "security_extract_iocs"],
+        "allowed_tools": ["security_nmap_scan", "security_dir_enum", "security_dir_enum_scan", "security_tshark_capture", "security_extract_iocs"],
         "handoff_contract": ["attack_surface", "inputs", "interesting_outputs", "evidence_refs"],
     },
     {
@@ -481,6 +481,7 @@ def _toolsets_for_role(role: dict[str, Any]) -> list[str]:
     allowed_tools = set(role.get("allowed_tools") or [])
     if allowed_tools & {
         "security_nmap_scan",
+        "security_dir_enum",
         "security_dir_enum_scan",
         "security_whois_lookup",
         "security_subfinder_scan",

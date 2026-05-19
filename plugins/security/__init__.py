@@ -53,6 +53,7 @@ from .state import (
 )
 from .scanners import (
     SECURITY_DIR_ENUM_PLAN_SCHEMA,
+    SECURITY_DIR_ENUM_SCHEMA,
     SECURITY_DIR_ENUM_SCAN_SCHEMA,
     SECURITY_HYDRA_PLAN_SCHEMA,
     SECURITY_MSF_RPC_PLAN_SCHEMA,
@@ -105,6 +106,7 @@ _TOOLS = (
     ("security_nmap_plan", SECURITY_NMAP_PLAN_SCHEMA, handle_nmap_plan),
     ("security_nmap_scan", SECURITY_NMAP_SCAN_SCHEMA, handle_nmap_scan),
     ("security_dir_enum_plan", SECURITY_DIR_ENUM_PLAN_SCHEMA, handle_dir_enum_plan),
+    ("security_dir_enum", SECURITY_DIR_ENUM_SCHEMA, handle_dir_enum_scan),
     ("security_dir_enum_scan", SECURITY_DIR_ENUM_SCAN_SCHEMA, handle_dir_enum_scan),
     ("security_whois_lookup", SECURITY_WHOIS_LOOKUP_SCHEMA, handle_whois_lookup),
     ("security_subfinder_plan", SECURITY_SUBFINDER_PLAN_SCHEMA, handle_subfinder_plan),

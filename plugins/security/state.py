@@ -207,6 +207,7 @@ WORKFLOW_META_TOOLS = {
 
 SECURITY_SCANNER_TOOLS = {
     "security_nmap_scan",
+    "security_dir_enum",
     "security_dir_enum_scan",
     "security_whois_lookup",
     "security_subfinder_scan",
@@ -342,6 +343,7 @@ PHASE_EXIT_ARTIFACTS: dict[str, set[str]] = {
 
 AUTO_ARTIFACT_BY_TOOL = {
     "security_nmap_scan": "active_recon_results",
+    "security_dir_enum": "service_inventory",
     "security_dir_enum_scan": "service_inventory",
     "security_whois_lookup": "passive_recon_notes",
     "security_subfinder_scan": "candidate_attack_surface",
@@ -710,7 +712,7 @@ def security_post_tool_call(
 
     artifact_id = AUTO_ARTIFACT_BY_TOOL.get(tool_name)
     if artifact_id and result_obj.get("success", True):
-        if state["mode"] == "ctf" and tool_name in {"security_nmap_scan", "security_dir_enum_scan", "security_subfinder_scan"}:
+        if state["mode"] == "ctf" and tool_name in {"security_nmap_scan", "security_dir_enum", "security_dir_enum_scan", "security_subfinder_scan"}:
             artifact_id = "ctf_attack_surface"
         _record_artifact(
             state,
